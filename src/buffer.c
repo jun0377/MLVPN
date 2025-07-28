@@ -30,13 +30,16 @@
   * Generic handlers
   */
 
+/*
+* 环形缓冲区的基础初始化函数 ，实现了通用的环形缓冲区创建逻辑
+*/
 circular_buffer_t *
 mlvpn_cb_init(int size)
 {
-    circular_buffer_t *buf = calloc(1, sizeof(circular_buffer_t));
-    buf->size = size + 1; /* Add 1 element to know when we are full or empty */
-    buf->data = NULL;
-    mlvpn_cb_reset(buf);
+    circular_buffer_t *buf = calloc(1, sizeof(circular_buffer_t));  // 分配并清零环形缓冲区控制结构体
+    buf->size = size + 1;                                           // 设置容量为size+1，多出的1个位置用于区分满/空状态
+    buf->data = NULL;                                               // 初始化数据指针为NULL，由上层函数负责分配实际数据存储空间
+    mlvpn_cb_reset(buf);                                            // 重置读写指针到初始位置（start=0, end=0）
     return buf;
 }
 
@@ -94,25 +97,27 @@ mlvpn_cb_write(circular_buffer_t *buf, void **data)
 }
 
 /**
- * Application specific handlers
+ * MLVPN数据包缓冲区初始化
  */
 circular_buffer_t *
 mlvpn_pktbuffer_init(int size)
 {
     int i;
     /* Basic circular buffer allocation */
-    circular_buffer_t *buf = mlvpn_cb_init(size);
+    circular_buffer_t *buf = mlvpn_cb_init(size);               // 创建基础环形缓冲区结构，分配size+1个元素的空间
 
     /* Actual packet buffer memory allocation */
-    pktbuffer_t *pktbuf = calloc(1, sizeof(pktbuffer_t));
-    pktbuf->pkts = malloc(buf->size * sizeof(mlvpn_pkt_t *));
+    pktbuffer_t *pktbuf = calloc(1, sizeof(pktbuffer_t));       // 为数据包缓冲区结构体分配内存并初始化为0
+    pktbuf->pkts = malloc(buf->size * sizeof(mlvpn_pkt_t *));   // 为数据包指针数组分配内存，数组大小为buf->size个指针
+
+    // 遍历所有数据包指针位置，为每个数据包分配内存并初始化为0，每个包约1500+字节
     for(i = 0; i < buf->size; i++)
         pktbuf->pkts[i] = calloc(1, sizeof(mlvpn_pkt_t));
 
-    buf->data = pktbuf;
+    buf->data = pktbuf;                                         // 将数据包缓冲区结构体关联到环形缓冲区的data字段
     /* This is sub-optimal as we call cb_free another time.
      * Not a big deal though. */
-    mlvpn_pktbuffer_reset(buf);
+    mlvpn_pktbuffer_reset(buf);                                 // 重置缓冲区状态，将start和end指针归零
     return buf;
 }
 
@@ -150,26 +155,30 @@ mlvpn_pktbuffer_read(circular_buffer_t *buf)
                                         (void *)pktbuffer->pkts);
 }
 
-
+/*
+* 缓冲区初始化 ，用于MLVPN的数据包重排序功能
+*/
 freebuffer_t *
 mlvpn_freebuffer_init(unsigned int size)
 {
-    unsigned int i;
-    struct pkt_entry *entry;
-    freebuffer_t *freebuf = calloc(size, sizeof(freebuffer_t));
+    unsigned int i;                                                 // 循环计数器
+    struct pkt_entry *entry;                                        // 数据包条目指针，用于创建链表节点
+    freebuffer_t *freebuf = calloc(size, sizeof(freebuffer_t));     // 分配freebuffer_t结构体内存
     if (freebuf == NULL) {
         fatal("buffer", "memory allocation failed");
     }
-    freebuf->size = size;
-    freebuf->used = 0;
-    TAILQ_INIT(&freebuf->free_head);
-    TAILQ_INIT(&freebuf->used_head);
+    freebuf->size = size;                                           // 设置缓冲区总容量
+    freebuf->used = 0;                                              // 初始化已使用计数器为0
+    TAILQ_INIT(&freebuf->free_head);                                // 初始化空闲数据包链表头
+    TAILQ_INIT(&freebuf->used_head);                                // 初始化已使用数据包链表头
+
+    // 预分配指定数量的数据包条目
     for(i = 0; i < size; i++) {
-        entry = calloc(1, sizeof(struct pkt_entry));
+        entry = calloc(1, sizeof(struct pkt_entry));                // 为每个数据包条目分配内存
         if (entry == NULL) {
             fatal("buffer", "memory allocation failed");
         }
-        TAILQ_INSERT_HEAD(&freebuf->free_head, entry, entries);
+        TAILQ_INSERT_HEAD(&freebuf->free_head, entry, entries);     // 将新分配的条目插入到空闲链表的头部，这样所有预分配的数据包都在空闲状态
     }
     return freebuf;
 }

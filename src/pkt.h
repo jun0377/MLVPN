@@ -14,12 +14,13 @@ enum {
     MLVPN_PKT_DISCONNECT
 };
 
+// MLVPN数据包结构
 typedef struct {
-    uint16_t len;
-    uint8_t type;
-    uint8_t reorder;
-    uint64_t seq;
-    char data[DEFAULT_MTU];
+    uint16_t len;                   // 数据包长度
+    uint8_t type;                   // 数据包类型（认证、数据、心跳等）
+    uint8_t reorder;                // 是否需要重排序
+    uint64_t seq;                   // 序列号
+    char data[DEFAULT_MTU];         // 实际数据内容（默认1500字节）
 } mlvpn_pkt_t;
 
 

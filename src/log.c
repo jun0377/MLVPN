@@ -44,18 +44,38 @@ static void logit(int, const char *, const char *, ...);
 #define MAX_DBG_TOKENS 40
 static const char *tokens[MAX_DBG_TOKENS + 1] = {NULL};
 
+/*
+ * 初始化日志系统
+ * n_debug： 设置全局调试模式标志
+ *      debug=1: 输出到stderr（调试模式）
+ *      debug=0: 输出到syslog（生产模式）
+ * n_level： 设置日志级别
+ *      level=0: 基本日志
+ *      level=1: 包含info级别日志
+ *      level=2: 包含特定token的debug日志
+ *      level>2: 包含所有debug日志
+**/
 void
 log_init(int n_debug, int n_level, const char *progname)
 {
     debug = n_debug;
     level = n_level;
 
+    // 如果不是调试模式（debug=0），则配置syslog
     if (!debug) {
         if (log_opened)
             closelog();
+
+        // 打开syslog连接
+        // progname: 程序名称，会出现在日志条目中
+        // LOG_PID: 在每条日志中包含进程ID
+        // LOG_NDELAY: 立即打开连接到syslog守护进程
+        // LOG_DAEMON: 使用daemon facility（系统守护进程类别）
         openlog(progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
         log_opened = 1;
     }
+
+    // 设置时区信息, 确保时间戳格式化函数（如date()）使用正确的本地时区
     tzset();
 }
 

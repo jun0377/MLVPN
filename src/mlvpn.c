@@ -82,7 +82,7 @@ static char **saved_argv;
 struct ev_loop *loop;
 static ev_timer reorder_drain_timeout;
 static ev_timer reorder_adjust_rtt_timeout;
-struct rtunhead rtuns;
+struct rtunhead rtuns;                          // tun隧道链表头
 char *status_command = NULL;
 char *process_title = NULL;
 int logdebug = 0;
@@ -370,7 +370,7 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
 
         if ((tun->addrinfo->ai_addrlen != addrlen) ||
                 (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0)) {
-            if (! tun->status >= MLVPN_AUTHOK) {
+            if (! (tun->status >= MLVPN_AUTHOK)) {
                 log_warnx("protocol", "%s rejected non authenticated connection",
                     tun->name);
                 return;
@@ -1300,18 +1300,21 @@ tuntap_io_event(EV_P_ ev_io *w, int revents)
     }
 }
 
+/*
+ * TUN/TAP设备初始化
+*/
 static void
 mlvpn_tuntap_init()
 {
     mlvpn_proto_t proto;
     memset(&tuntap, 0, sizeof(tuntap));
-    snprintf(tuntap.devname, MLVPN_IFNAMSIZ-1, "%s", "mlvpn0");
-    tuntap.maxmtu = 1500 - PKTHDRSIZ(proto) - IP4_UDP_OVERHEAD;
+    snprintf(tuntap.devname, MLVPN_IFNAMSIZ-1, "%s", "mlvpn0");         // 设置虚拟网络设备名称为 "mlvpn0"
+    tuntap.maxmtu = 1500 - PKTHDRSIZ(proto) - IP4_UDP_OVERHEAD;         // MTU = 1500 - MLVPN 协议头大小 - IPv4 + UDP 头部开销（28字节）
     log_debug(NULL, "absolute maximum mtu: %d", tuntap.maxmtu);
-    tuntap.type = MLVPN_TUNTAPMODE_TUN;
-    tuntap.sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);
-    ev_init(&tuntap.io_read, tuntap_io_event);
-    ev_init(&tuntap.io_write, tuntap_io_event);
+    tuntap.type = MLVPN_TUNTAPMODE_TUN;                                 // tun设备
+    tuntap.sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);                     // 初始化数据包队列大小
+    ev_init(&tuntap.io_read, tuntap_io_event);                          // 读事件监听器，当 TUN/TAP 设备有数据可读时触发，处理从虚拟网络接口接收到的数据包
+    ev_init(&tuntap.io_write, tuntap_io_event);                         // 写事件监听器，当 TUN/TAP 设备可写且有数据待发送时触发，处理向虚拟网络接口发送数据包
 }
 
 static void
@@ -1394,28 +1397,28 @@ main(int argc, char **argv)
 {
     int i, c, option_index, config_fd;
     struct stat st;
-    ev_signal signal_hup;
-    ev_signal signal_sigquit, signal_sigint, signal_sigterm;
-    extern char *__progname;
+    ev_signal signal_hup;                                       // SIGHUP信号处理器（配置重载）
+    ev_signal signal_sigquit, signal_sigint, signal_sigterm;    // 退出信号处理器
+    extern char *__progname;                                    // 进程名称
 #ifdef ENABLE_CONTROL
-    struct mlvpn_control control;
+    struct mlvpn_control control;                               // 控制结构体（如果启用控制功能）
 #endif
     /* uptime statistics */
-    if (time(&mlvpn_status.start_time) == -1)
+    if (time(&mlvpn_status.start_time) == -1)                   // 记录程序启动时间，用于统计运行时长
         log_warn(NULL, "start_time time() failed");
-    if (time(&mlvpn_status.last_reload) == -1)
+    if (time(&mlvpn_status.last_reload) == -1)                  // 记录上次配置重载时间，用于统计运行时长
         log_warn(NULL, "last_reload time() failed");
 
-    log_init(1, 2, "mlvpn");
+    log_init(1, 2, "mlvpn");                                    // 初始化日志系统：启用syslog，详细级别2，程序名"mlvpn"
 
-    _progname = strdup(__progname);
-    saved_argv = calloc(argc + 1, sizeof(*saved_argv));
-    for(i = 0; i < argc; i++) {
+    _progname = strdup(__progname);                             // 保存程序名和命令行参数，用于进程标题设置和权限分离
+    saved_argv = calloc(argc + 1, sizeof(*saved_argv));         // 为命令行参数分配内存
+    for(i = 0; i < argc; i++) {                                 // 复制每个命令行参数
         saved_argv[i] = strdup(argv[i]);
     }
-    saved_argv[i] = NULL;
-    compat_init_setproctitle(argc, argv);
-    argv = saved_argv;
+    saved_argv[i] = NULL;                                       // 数组结束标记
+    compat_init_setproctitle(argc, argv);                       // 初始化进程标题设置功能，用于修改在ps命令中显示的进程名称
+    argv = saved_argv;                                          // 使用复制的参数数组
 
     /* Parse the command line quickly for config file name.
      * This is needed for priv_init to know where the config
@@ -1423,6 +1426,8 @@ main(int argc, char **argv)
      *
      * priv_init will not allow to change the config file path.
      */
+
+    // 解析命令行参数
     while(1)
     {
         c = getopt_long(argc, saved_argv, optstr,
@@ -1433,58 +1438,63 @@ main(int argc, char **argv)
         switch (c)
         {
         case 1:  /* --natural-title */
-            mlvpn_options.change_process_title = 0;
+            mlvpn_options.change_process_title = 0;             // 禁用进程标题更改
             break;
         case 2:  /* --debug */
-            mlvpn_options.debug = 1;
+            mlvpn_options.debug = 1;                            // 启用调试模式
             break;
         case 3:  /* --yes-run-as-root */
-            mlvpn_options.root_allowed = 1;
+            mlvpn_options.root_allowed = 1;                     // 允许以root身份运行（不推荐）
             break;
-        case 'c': /* --config */
+        case 'c': /* --config */                                // 设置配置文件路径
             strlcpy(mlvpn_options.config_path, optarg,
                     sizeof(mlvpn_options.config_path));
             break;
         case 'D': /* debug= */
-            mlvpn_options.debug = 1;
-            log_accept(optarg);
+            mlvpn_options.debug = 1;                            // 启用调试模式
+            log_accept(optarg);                                 // 设置调试日志过滤器
             break;
-        case 'n': /* --name */
+        case 'n': /* --name */                                  // 设置进程名称
             strlcpy(mlvpn_options.process_name, optarg,
                     sizeof(mlvpn_options.process_name));
             break;
-        case 'u': /* --user */
+        case 'u': /* --user */                                  // 设置非特权用户名
             strlcpy(mlvpn_options.unpriv_user, optarg,
                     sizeof(mlvpn_options.unpriv_user));
             break;
         case 'v': /* --verbose */
-            mlvpn_options.verbose++;
+            mlvpn_options.verbose++;                            // 增加详细输出级别
             break;
         case 'V': /* --version */
-            printf("mlvpn version %s.\n", VERSION);
+            printf("mlvpn version %s.\n", VERSION);             // 显示版本信息
             _exit(0);
             break;
         case 'q': /* --quiet */
-            mlvpn_options.verbose--;
+            mlvpn_options.verbose--;                            // 减少详细输出级别
             break;
         case 'h': /* --help */
         default:
-            usage(argv);
+            usage(argv);                                        // 显示帮助信息并退出
         }
     }
 
     /* Config file check */
+    // 检查配置文件是否可读
     if (access(mlvpn_options.config_path, R_OK) != 0) {
         log_warnx("config", "unable to read config file %s",
             mlvpn_options.config_path);
     }
+
+    // 获取配置文件状态信息
     if (stat(mlvpn_options.config_path, &st) < 0) {
         fatal("config", "unable to open file");
-    } else if (st.st_mode & (S_IRWXG|S_IRWXO)) {
+    } 
+    // 检查文件权限：配置文件不应该被组用户或其他用户访问（安全考虑）
+    else if (st.st_mode & (S_IRWXG|S_IRWXO)) {
         fatal("config", "file is group/other accessible");
     }
 
-    /* Some common checks */
+    // 如果以root身份运行，进行安全检查
     if (getuid() == 0)
     {
         void *pw = getpwnam(mlvpn_options.unpriv_user);
@@ -1496,106 +1506,123 @@ main(int argc, char **argv)
     }
 
 #ifdef HAVE_LINUX
+    // Linux特定检查：确保可以访问TUN/TAP设备
     if (access("/dev/net/tun", R_OK|W_OK) != 0)
     {
         fatal(NULL, "unable to open /dev/net/tun");
     }
 #endif
 
+    // 设置进程标题
     if (mlvpn_options.change_process_title)
     {
         __progname = "mlvpn";
         if (*mlvpn_options.process_name)
         {
             process_title = mlvpn_options.process_name;
-            setproctitle("%s [priv]", mlvpn_options.process_name);
+            setproctitle("%s [priv]", mlvpn_options.process_name);  // 特权进程标题
         } else {
             process_title = "";
-            setproctitle("[priv]");
+            setproctitle("[priv]");                                 // 默认特权进程标题
         }
     }
 
+    // 初始化libsodium加密库
     if (crypto_init() == -1)
         fatal(NULL, "libsodium initialization failed");
 
+    // 重新初始化日志系统，使用最终的配置参数
     log_init(mlvpn_options.debug, mlvpn_options.verbose, mlvpn_options.process_name);
 
 #ifdef HAVE_LINUX
-    mlvpn_systemd_notify();
+    mlvpn_systemd_notify();                                     // 通知systemd服务已准备就绪
 #endif
 
-    LIST_INIT(&rtuns);
-    priv_init(argv, mlvpn_options.unpriv_user);
-    if (mlvpn_options.change_process_title)
+    LIST_INIT(&rtuns);                                          // 初始化隧道链表
+    priv_init(argv, mlvpn_options.unpriv_user);                 // 初始化权限分离：创建特权进程和非特权进程
+    if (mlvpn_options.change_process_title)                     // 更新进程标题（现在运行在非特权进程中）
         update_process_title();
 
-    freebuf = mlvpn_freebuffer_init(512);
+    freebuf = mlvpn_freebuffer_init(512);                       // 初始化空闲缓冲区池，512个MLVPN数据包大小
 
     /* Kill me if my root process dies ! */
 #ifdef HAVE_LINUX
-    prctl(PR_SET_PDEATHSIG, SIGCHLD);
+    prctl(PR_SET_PDEATHSIG, SIGCHLD);                           // Linux特定：如果父进程（特权进程）死亡，则杀死当前进程
 #endif
 
     /* Config file opening / parsing */
-    config_fd = priv_open_config(mlvpn_options.config_path);
+    config_fd = priv_open_config(mlvpn_options.config_path);    // 通过特权进程打开配置文件
     if (config_fd < 0)
         fatalx("cannot open config file");
-    if (! (loop = ev_default_loop(EVFLAG_AUTO)))
+
+    if (! (loop = ev_default_loop(EVFLAG_AUTO)))                // 初始化libev事件循环
         fatal(NULL, "cannot initialize libev. check LIBEV_FLAGS?");
+    
     /* tun/tap initialization */
-    mlvpn_tuntap_init();
-    if (mlvpn_config(config_fd, 1) != 0)
+    mlvpn_tuntap_init();                                        // 初始化TUN/TAP接口及MLVPN数据包缓冲区
+
+    if (mlvpn_config(config_fd, 1) != 0)                        // 解析配置文件（第一次加载）
         fatalx("cannot open config file");
 
-    if (mlvpn_tuntap_alloc(&tuntap) <= 0)
+    if (mlvpn_tuntap_alloc(&tuntap) <= 0)                       // 分配TUN/TAP设备
         fatalx("cannot create tunnel device");
     else
         log_info(NULL, "created interface `%s'", tuntap.devname);
-    mlvpn_sock_set_nonblocking(tuntap.fd);
+
+    mlvpn_sock_set_nonblocking(tuntap.fd);                      // 设置TUN/TAP设备为非阻塞模式
 
     /* This is a dummy value which will be overwritten when the first
      * SRTT values will be available
      */
-    ev_init(&reorder_drain_timeout, &mlvpn_rtun_reorder_drain_timeout);
-    ev_io_set(&tuntap.io_read, tuntap.fd, EV_READ);
-    ev_io_set(&tuntap.io_write, tuntap.fd, EV_WRITE);
-    ev_io_start(loop, &tuntap.io_read);
+    ev_init(&reorder_drain_timeout, &mlvpn_rtun_reorder_drain_timeout); // 初始化重排序超时定时器（初始值会被实际RTT值覆盖）
 
+    ev_io_set(&tuntap.io_read, tuntap.fd, EV_READ);                     // 设置TUN/TAP设备的读事件监听器
+    ev_io_set(&tuntap.io_write, tuntap.fd, EV_WRITE);                   // 设置TUN/TAP设备的写事件监听器
+    ev_io_start(loop, &tuntap.io_read);                                 // 开始监听读事件
+
+    // 初始化RTT调整定时器（每1秒触发一次）
     ev_timer_init(&reorder_adjust_rtt_timeout,
         mlvpn_rtun_adjust_reorder_timeout, 0., 1.0);
+    // 启动定时器
     ev_timer_start(EV_A_ &reorder_adjust_rtt_timeout);
 
+    // 通知特权进程：非特权进程已进入运行状态
     priv_set_running_state();
 
 #ifdef ENABLE_CONTROL
-    /* Initialize mlvpn remote control system */
+    // 初始化远程控制系统（如果启用）
     strlcpy(control.fifo_path, mlvpn_options.control_unix_path,
         sizeof(control.fifo_path));
-    control.mode = MLVPN_CONTROL_READWRITE;
-    control.fifo_mode = 0600;
-    control.bindaddr = strdup(mlvpn_options.control_bind_host);
-    control.bindport = strdup(mlvpn_options.control_bind_port);
-    mlvpn_control_init(&control);
+    control.mode = MLVPN_CONTROL_READWRITE;                         // 读写模式
+    control.fifo_mode = 0600;                                       // FIFO权限：仅所有者可读写
+    control.bindaddr = strdup(mlvpn_options.control_bind_host);     // 绑定地址
+    control.bindport = strdup(mlvpn_options.control_bind_port);     // 绑定端口
+    mlvpn_control_init(&control);                                   // 初始化控制接口
 #endif
 
-    /* re-compute rtun weight based on bandwidth allocation */
+    // 根据带宽分配重新计算隧道权重
     mlvpn_rtun_recalc_weight();
 
-    /* Last check before running */
+    // 最后检查：确保特权进程仍然存活
     if (getppid() == 1)
         fatalx("Privileged process died");
 
-    ev_signal_init(&signal_hup, mlvpn_config_reload, SIGHUP);
-    ev_signal_init(&signal_sigint, mlvpn_quit, SIGINT);
-    ev_signal_init(&signal_sigquit, mlvpn_quit, SIGQUIT);
-    ev_signal_init(&signal_sigterm, mlvpn_quit, SIGTERM);
+    // 注册信号处理器
+    ev_signal_init(&signal_hup, mlvpn_config_reload, SIGHUP);   // 配置重载信号
+    ev_signal_init(&signal_sigint, mlvpn_quit, SIGINT);         // 中断信号
+    ev_signal_init(&signal_sigquit, mlvpn_quit, SIGQUIT);       // 退出信号
+    ev_signal_init(&signal_sigterm, mlvpn_quit, SIGTERM);       // 终止信号
+
+    // 启动信号监听
     ev_signal_start(loop, &signal_hup);
     ev_signal_start(loop, &signal_sigint);
     ev_signal_start(loop, &signal_sigquit);
     ev_signal_start(loop, &signal_sigterm);
-
+    
+    // 进入主事件循环（程序的核心运行循环）
     ev_run(loop, 0);
 
+    // 清理资源（正常情况下不会到达这里）
     free(_progname);
     return 0;
 }

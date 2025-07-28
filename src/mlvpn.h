@@ -86,32 +86,32 @@
 struct mlvpn_options_s
 {
     /* use ps_status or not ? */
-    int change_process_title;
+    int change_process_title;                                   // 是否允许进程更改名称
     /* process name if set */
-    char process_name[1024];
+    char process_name[1024];                                    // 自定义进程名称字符串（最大1024字节）
     /* where is the config file */
-    char control_unix_path[MAXPATHLEN];
-    char control_bind_host[MLVPN_MAXHNAMSTR];
-    char control_bind_port[MLVPN_MAXHNAMSTR];
-    char config_path[MAXPATHLEN];
+    char control_unix_path[MAXPATHLEN];                         // Unix域套接字控制接口路径（最大路径长度MAXPATHLEN），用于本地进程间通信，允许外部工具控制MLVPN实例
+    char control_bind_host[MLVPN_MAXHNAMSTR];                   // bind IP
+    char control_bind_port[MLVPN_MAXHNAMSTR];                   // bind Port
+    char config_path[MAXPATHLEN];                               // 配置文件的完整路径
     /* tunnel configuration for the status command script */
     char ip4[24];
     char ip6[128]; /* Should not exceed 45 + 3 + 1 bytes */
     char ip4_gateway[16];
     char ip6_gateway[128];
-    char ip4_routes[4096]; /* Allow about 200 routes minimum */
-    char ip6_routes[8192]; /* Allow about 80 routes minimum */
+    char ip4_routes[4096]; /* Allow about 200 routes minimum */ // IPv4路由表配置，约支持200条路由的最小配置
+    char ip6_routes[8192]; /* Allow about 80 routes minimum */  // Pv6路由表配置，约支持80条路由的最小配置
     int mtu;
-    int config_fd;
+    int config_fd;                                              // 配置文件的文件描述符
     /* log verbosity */
-    int verbose;
-    int debug;
+    int verbose;                                                // 日志详细程度级别， 0: 基本日志, 1: 包含info, 2: 包含特定debug, >2: 全部debug
+    int debug;                                                  // 1: 调试模式（输出到stderr）, 0: 生产模式（输出到syslog）
     /* User change if running as root */
-    char unpriv_user[128];
-    int cleartext_data;
-    int root_allowed;
-    uint32_t reorder_buffer_size;
-    uint32_t fallback_available;
+    char unpriv_user[128];                                      // 非特权用户名（128字节），当以root启动时，初始化完成后切换到此用户身份运行，提高安全性，遵循最小权限原则
+    int cleartext_data;                                         // 1: 允许明文传输（调试用）, 0: 强制加密传输（生产环境）
+    int root_allowed;                                           // 是否允许root用户运行
+    uint32_t reorder_buffer_size;                               // 数据包重排序缓冲区大小（32位无符号整数），// 用于处理网络中乱序到达的数据包，提高传输可靠性
+    uint32_t fallback_available;                                // 备用链路可用性标志（32位无符号整数），指示是否有备用隧道可用于故障转移
 };
 
 struct mlvpn_status_s
@@ -133,7 +133,7 @@ enum chap_status {
 
 LIST_HEAD(rtunhead, mlvpn_tunnel_s);
 
-extern struct rtunhead rtuns;
+extern struct rtunhead rtuns;           // tun隧道链表头
 
 typedef struct mlvpn_tunnel_s
 {

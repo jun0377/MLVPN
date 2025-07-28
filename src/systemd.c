@@ -21,6 +21,10 @@
 /**
  * Tell if we have been started by systemd.
  */
+
+/**
+ * systemd服务就绪通知机制 ，用于告知systemd服务管理器MLVPN进程已经完成初始化并准备好提供服务
+ */
 void
 mlvpn_systemd_notify()
 {
