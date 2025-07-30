@@ -45,6 +45,7 @@
 #include <string.h>
 #include <unistd.h>
 
+// 使用unix域套接字，发送文件描述符
 void
 send_fd(int sock, int fd)
 {
@@ -85,6 +86,7 @@ send_fd(int sock, int fd)
               "send_fd", (long)n);
 }
 
+// 使用unix域套接字，接受文件描述符
 int
 receive_fd(int sock)
 {
@@ -113,15 +115,15 @@ receive_fd(int sock)
         warnx("%s: recvmsg: expected received 1 got %ld",
               "receive_fd", (long)n);
     if (result == 0) {
-        cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg = CMSG_FIRSTHDR(&msg);                         // 获取第一个控制消息
         if (cmsg == NULL) {
             warnx("%s: no message header", "receive_fd");
             return (-1);
         }
-        if (cmsg->cmsg_type != SCM_RIGHTS)
+        if (cmsg->cmsg_type != SCM_RIGHTS)                  // 检查消息类型是否为文件描述符传递
             warnx("%s: expected type %d got %d", "receive_fd",
                   SCM_RIGHTS, cmsg->cmsg_type);
-        fd = (*(int *)CMSG_DATA(cmsg));
+        fd = (*(int *)CMSG_DATA(cmsg));                     // 提取文件描述符
         return fd;
     } else {
         errno = result;

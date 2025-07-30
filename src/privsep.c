@@ -63,11 +63,14 @@
  * If the config file has been modified, then the child dies, and
  * the priv parent restarts itself.
  */
+
+// MLVPN 特权分离机制中的四个状态
+// STATE_INIT → STATE_CONFIG → STATE_RUNNING → STATE_QUIT 权限逐渐降低
 enum priv_state {
-    STATE_INIT,       /* just started up */
-    STATE_CONFIG,     /* parsing config file for first time */
-    STATE_RUNNING,    /* running and accepting network traffic */
-    STATE_QUIT        /* shutting down */
+    STATE_INIT,       // 刚启动     /* just started up */
+    STATE_CONFIG,     // 首次解析配置文件   /* parsing config file for first time */
+    STATE_RUNNING,    // 运行中，接受网络流量   /* running and accepting network traffic */
+    STATE_QUIT        // 关闭中 /* shutting down */
 };
 
 enum cmd_types {
@@ -83,7 +86,7 @@ enum cmd_types {
 /* Error message for some communication between processes */
 #define ERRMSGSIZ 8192
 
-static int priv_fd = -1;
+static int priv_fd = -1;                                // 用于父子进程间通信的套接字
 static volatile pid_t child_pid = -1;
 static volatile sig_atomic_t cur_state = STATE_INIT;
 
@@ -101,6 +104,13 @@ static void must_write(int, void *, size_t);
 static int  may_read(int, void *, size_t);
 static void reset_default_signals();
 
+/**
+ * 这个函数实现了完整的特权分离机制，通过fork创建父子进程，
+ * 子进程降低权限处理日常任务，父进程保持特权处理需要root权限的操作，两者通过socket进行安全通信
+ *      子进程（非特权）- 处理网络数据和日常操作
+ *      父进程 - 处理需要root权限的逻辑
+ *              如：打开 TUN/TAP 设备 / 打开配置文件 / 执行系统脚本 / DNS 解析
+ */
 int
 priv_init(char *argv[], char *username)
 {
@@ -119,56 +129,60 @@ priv_init(char *argv[], char *username)
     char *phostname, *pservname = NULL;
     char script_path[MAXPATHLEN] = {0};
     char tuntapname[MLVPN_IFNAMSIZ];
-    char **script_argv;
-    char **script_env;
-    char errormessage[ERRMSGSIZ];
-    int script_argc;
+    char **script_argv;                 // 脚本参数数组
+    char **script_env;                  // 脚本环境变量数组
+    char errormessage[ERRMSGSIZ];       // 错误消息缓冲区
+    int script_argc;                    // 脚本参数计数
     struct stat st;
 
     /* LC: TODO: Better way to check for root ! */
-    int is_root = getuid() == 0;
+    int is_root = getuid() == 0;        // 检查当前用户是否为root用户
 
-    reset_default_signals();
-    memset(&sa, 0, sizeof(sa));
-    sigemptyset(&sa.sa_mask);
-    sa.sa_handler = SIG_IGN;
-    sigaction(SIGPIPE, &sa, NULL);
+    reset_default_signals();            // 重置默认信号处理
+    memset(&sa, 0, sizeof(sa));         // 清零信号处理结构体
+    sigemptyset(&sa.sa_mask);           // 清空信号掩码
+    sa.sa_handler = SIG_IGN;            // 设置信号处理为忽略
+    sigaction(SIGPIPE, &sa, NULL);      // 忽略SIGPIPE信号，防止写入关闭的管道时程序崩溃
 
-    /* Create sockets */
+    // 创建本地socket对用于进程间通信
     if (socketpair(AF_LOCAL, SOCK_STREAM, PF_UNSPEC, socks) == -1)
         err(1, "socketpair() failed");
 
     /* Safe enough ? */
-    if (username && *username)
+    if (username && *username)          // 用户名不为空
     {
-        pw = getpwnam(username);
+        pw = getpwnam(username);        // 获取用户信息
         if (pw == NULL)
             errx(1, "unknown user %s", username);
     }
 
-    child_pid = fork();
+    child_pid = fork();                 // 创建子进程，返回子进程PID
     if (child_pid < 0)
         err(1, "fork() failed");
 
+    // 子进程
     if (!child_pid)
     {
+        // 如果在Valgrind下运行，警告：保持权限用于调试
         if (RUNNING_ON_VALGRIND) {
             warnx("running on valgrind, keep privileges");
         } else {
-            /* Child - drop privileges and return */
-            if (is_root && pw)
+            // 子进程 - 降低权限并返回
+            if (is_root && pw)                          // 如果是root用户且有用户信息
             {
-                if (chroot(pw->pw_dir) != 0)
+                if (chroot(pw->pw_dir) != 0)            // 切换根目录到用户目录
                     err(1, "unable to chroot");
             }
 
             /* May be usefull to chose chdir directory ? */
-            if (chdir("/") != 0)
+            // 可能需要选择工作目录
+            if (chdir("/") != 0)                        // 切换工作目录到根目录
                 err(1, "unable to chdir");
 
+            // 如果是root用户且有用户信息
             if (is_root && pw)
             {
-                if (setgroups(1, &pw->pw_gid) == -1)
+                if (setgroups(1, &pw->pw_gid) == -1)    // 设置用户组
                     err(1, "setgroups() failed");
 /* NetBSD does not have thoses */
 #ifdef HAVE_SETRESGID
@@ -179,16 +193,16 @@ priv_init(char *argv[], char *username)
                     err(1, "setregid() failed");
 #endif
 #ifdef HAVE_SETRESUID
-                if (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) == -1)
+                if (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) == -1)    // 设置真实、有效、保存的用户ID
                     err(1, "setresuid() failed");
 #else
-                if (setreuid(pw->pw_uid, pw->pw_uid) == -1)
+                if (setreuid(pw->pw_uid, pw->pw_uid) == -1)                 // 设置真实和有效用户ID
                     err(1, "setreuid() failed");
 #endif
             }
         }
-        close(socks[0]);
-        priv_fd = socks[1];
+        close(socks[0]);            // 关闭socket对的父进程端
+        priv_fd = socks[1];         // 子进程保存socket用于与父进程通信
 #ifdef HAVE_PLEDGE
         if (pledge("stdio inet unix recvfd wroute", NULL) != 0) {
             err(1, "pledge");
@@ -196,20 +210,24 @@ priv_init(char *argv[], char *username)
 #endif
         return 0;
     }
+
+    // 以下为父进程代码块
+
     /* Father */
     /* Pass TERM/HUP/INT/QUIT through to child, and accept CHLD */
-    sa.sa_flags = SA_RESTART;
-    sa.sa_handler = sig_pass_to_chld;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGQUIT, &sa, NULL);
-    /* mlvpn (unpriv) died */
-    sa.sa_handler = sig_got_chld;
-    sa.sa_flags = SA_NOCLDSTOP;
-    sigaction(SIGCHLD, &sa, NULL);
+    // 将TERM/HUP/INT/QUIT信号转发给子进程，接受CHLD信号
+    sa.sa_flags = SA_RESTART;                           // 设置信号处理标志为重启系统调用
+    sa.sa_handler = sig_pass_to_chld;                   // 设置信号处理函数为转发给子进程
+    sigaction(SIGTERM, &sa, NULL);                      // 注册SIGTERM信号处理
+    sigaction(SIGHUP, &sa, NULL);                       // 注册SIGHUP信号处理
+    sigaction(SIGINT, &sa, NULL);                       // 注册SIGINT信号处理
+    sigaction(SIGQUIT, &sa, NULL);                      // 注册SIGQUIT信号处理
+    /* // mlvpn（非特权进程）死亡处理 mlvpn (unpriv) died */
+    sa.sa_handler = sig_got_chld;                       // 设置子进程死亡信号处理函数
+    sa.sa_flags = SA_NOCLDSTOP;                         // 不接收子进程停止信号
+    sigaction(SIGCHLD, &sa, NULL);                      // 注册SIGCHLD信号处理
 
-    close(socks[1]);
+    close(socks[1]);                                    // 关闭子进程段的socket
 
     nullfd = open("/dev/null", O_RDONLY);
     if (nullfd < 0)
@@ -217,34 +235,38 @@ priv_init(char *argv[], char *username)
         perror("/dev/null");
         _exit(1);
     }
-    dup2(nullfd, 0);
-    dup2(nullfd, 1);
+    dup2(nullfd, 0);        // 重定向标准输入到/dev/null
+    dup2(nullfd, 1);        // 重定向标准输出到/dev/null
     //dup2(nullfd, 2);
     if (nullfd > 2)
         close(nullfd);
 
-    increase_state(STATE_CONFIG);
+    increase_state(STATE_CONFIG);                       // 将状态切换为 解析配置文件 状态
 
+    // 主循环：直到退出状态
     while (cur_state < STATE_QUIT)
     {
-        if (may_read(socks[0], &cmd, sizeof(cmd)))
+        if (may_read(socks[0], &cmd, sizeof(cmd)))      // 尝试从socket读取命令
             break;
+        
         switch (cmd) {
 
+        // 打开配置文件命令
         case PRIV_OPEN_CONFIG:
-            must_read(socks[0], &len, sizeof(len));
+            must_read(socks[0], &len, sizeof(len));     // 读取路径长度
             if (len == 0 || len > sizeof(path) || len > MAXPATHLEN)
                 _exit(0);
-            must_read(socks[0], &path, len);
+            must_read(socks[0], &path, len);            // 读取文件路径
             path[len - 1] = '\0';
 
-            if (cur_state == STATE_CONFIG)
-                strlcpy(allowed_configfile, path, len);
-            if (! *allowed_configfile)
+            if (cur_state == STATE_CONFIG)              // 解析配置文件状态
+                strlcpy(allowed_configfile, path, len); // 保存允许的配置文件路径
+            if (! *allowed_configfile)                  // 配置文件路径为空
                 fatalx("empty configuration file path");
 
+            // 以只读非阻塞方式打开配置文件
             fd = root_open_file(allowed_configfile, O_RDONLY|O_NONBLOCK);
-            send_fd(socks[0], fd);
+            send_fd(socks[0], fd);                      // 将文件描述符发送给子进程
             if (fd < 0)
                 log_warnx("privsep", "priv_open_config `%s' failed",
                     allowed_configfile);
@@ -252,173 +274,193 @@ priv_init(char *argv[], char *username)
                 close(fd);
             break;
 
+        // 打开TUN/TAP设备命令
         case PRIV_OPEN_TUN:
-            /* we should not re-open the tuntap device ever! */
+            /* 永远不应该重新打开tuntap设备 we should not re-open the tuntap device ever! */
             if (cur_state != STATE_CONFIG)
                 _exit(0);
-
+                    
+            // 读取TUN/TAP模式
             must_read(socks[0], &tuntapmode, sizeof(tuntapmode));
             if (tuntapmode != MLVPN_TUNTAPMODE_TUN &&
                     tuntapmode != MLVPN_TUNTAPMODE_TAP)
                 _exit(0);
 
-            must_read(socks[0], &len, sizeof(len));
+            must_read(socks[0], &len, sizeof(len));         // 读取设备名长度
             if (len > MLVPN_IFNAMSIZ)
                 _exit(0);
             else if (len > 0) {
-                must_read(socks[0], &tuntapname, len);
+                must_read(socks[0], &tuntapname, len);      // 读取设备名
                 tuntapname[len - 1] = '\0';
             } else {
                 tuntapname[0] = '\0';
             }
-            must_read(socks[0], &mtu, sizeof(mtu));
+            must_read(socks[0], &mtu, sizeof(mtu));         // 读取MTU值
             if (mtu < 0 || mtu > 1500) {
                 fatalx("priv_open_tun: wrong mtu.");
             }
 
-            /* see tuntap_*.c . That's where this is defined. */
-            fd = root_tuntap_open(tuntapmode, tuntapname, mtu);
+            /* 参见tuntap_*.c文件的定义 see tuntap_*.c . That's where this is defined. */
+            fd = root_tuntap_open(tuntapmode, tuntapname, mtu); // 打开TUN/TAP设备
             if (fd < 0)
             {
                 len = 0;
-                must_write(socks[0], &len, sizeof(len));
+                must_write(socks[0], &len, sizeof(len));        // 发送失败标志
                 break;
             }
 
-            len = strlen(tuntapname) + 1;
-            must_write(socks[0], &len, sizeof(len));
-            must_write(socks[0], tuntapname, len);
-            send_fd(socks[0], fd);
+            len = strlen(tuntapname) + 1;                       // 计算设备名长度
+            must_write(socks[0], &len, sizeof(len));            // 发送设备名长度
+            must_write(socks[0], tuntapname, len);              // 发送设备名
+            send_fd(socks[0], fd);                              // 发送文件描述符
             if (fd >= 0)
                 close(fd);
             break;
 
+        // 初始化脚本命令
         case PRIV_INIT_SCRIPT:
             /* Not allowed to change script path when running
              * for security reasons
+             *
+             * 出于安全考虑，运行时不允许更改脚本路径
              */
             if (cur_state != STATE_CONFIG)
                 _exit(0);
 
-            must_read(socks[0], &len, sizeof(len));
-            if (len == 0 || len > sizeof(script_path))
+            must_read(socks[0], &len, sizeof(len));         // 读取路径长度
+            if (len == 0 || len > sizeof(script_path))      // 检查长度有效性
                 _exit(0);
-            must_read(socks[0], &path, len);
+            must_read(socks[0], &path, len);                // 读取脚本路径
 
             path[len - 1] = '\0';
 
             /* Basic permission checking.
              * basically, the script must be 0700 owned by root
+             *
+             * 基本权限检查：脚本必须是root拥有的0700权限
              */
-            *errormessage = '\0';
-            if (stat(path, &st) < 0)
+            *errormessage = '\0';                       // 清空错误消息
+            if (stat(path, &st) < 0)                    // 获取文件状态
             {
                 snprintf(errormessage, ERRMSGSIZ, "Unable to open file %s:%s",
                          path, strerror(errno));
-            } else if (st.st_mode & (S_IRWXG|S_IRWXO)) {
+            } 
+             // 检查是否有组或其他用户权限
+            else if (st.st_mode & (S_IRWXG|S_IRWXO)) {
                 snprintf(errormessage, ERRMSGSIZ,
                          "%s is group/other accessible",
                          path);
-            } else if (!(st.st_mode & S_IXUSR)) {
+            } 
+            // 检查是否有执行权限
+            else if (!(st.st_mode & S_IXUSR)) {
                 snprintf(errormessage, ERRMSGSIZ,
                          "%s is not executable",
                          path);
             } else {
-                strlcpy(script_path, path, len);
+                strlcpy(script_path, path, len);    // 复制脚本路径
             }
-            len = strlen(errormessage) + 1;
-            must_write(socks[0], &len, sizeof(len));
-            must_write(socks[0], errormessage, len);
+            len = strlen(errormessage) + 1;             // 计算错误消息长度
+            must_write(socks[0], &len, sizeof(len));    // 发送错误消息长度
+            must_write(socks[0], errormessage, len);    // 发送错误消息
             break;
-
+        
+        // 获取地址信息命令
         case PRIV_GETADDRINFO:
-            /* Expecting: len, hostname, len, servname, hints */
-            must_read(socks[0], &hostname_len, sizeof(hostname_len));
+            /* 期望：长度、主机名、长度、服务名、提示 Expecting: len, hostname, len, servname, hints */
+            must_read(socks[0], &hostname_len, sizeof(hostname_len));   // 读取主机名长度
             if (hostname_len > sizeof(hostname))
                 _exit(0);
             else if (hostname_len > 0) {
-                must_read(socks[0], &hostname, hostname_len);
-                hostname[hostname_len - 1] = '\0';
-                phostname = *hostname ? hostname : NULL;
+                must_read(socks[0], &hostname, hostname_len);           // 读取主机名
+                hostname[hostname_len - 1] = '\0';                      // 确保字符串结尾
+                phostname = *hostname ? hostname : NULL;                // 设置主机名
             } else {
                 phostname = NULL;
             }
 
-            must_read(socks[0], &servname_len, sizeof(servname_len));
+            must_read(socks[0], &servname_len, sizeof(servname_len));   // 读取服务名长度
             if (servname_len > sizeof(servname))
                 _exit(0);
             if (servname_len > 0) {
-                must_read(socks[0], &servname, servname_len);
-                servname[servname_len - 1] = '\0';
-                pservname = *servname ? servname : NULL;
+                must_read(socks[0], &servname, servname_len);           // 读取服务名
+                servname[servname_len - 1] = '\0';                      // 确保字符串结尾
+                pservname = *servname ? servname : NULL;                // 设置服务名指针
             } else {
                 pservname = NULL;
             }
 
-            memset(&hints, '\0', sizeof(struct addrinfo));
-            must_read(socks[0], &hints, sizeof(struct addrinfo));
+            memset(&hints, '\0', sizeof(struct addrinfo));              // 清零提示结构
+            must_read(socks[0], &hints, sizeof(struct addrinfo));       // 读取地址信息提示
 
-            addrinfo_len = 0;
-            i = getaddrinfo(phostname, pservname, &hints, &res0);
+            addrinfo_len = 0;                                           // 初始化地址信息长度
+            i = getaddrinfo(phostname, pservname, &hints, &res0);       // 获取地址信息
             if (i != 0 || res0 == NULL) {
-                must_write(socks[0], &addrinfo_len, sizeof(addrinfo_len));
-            } else {
+                must_write(socks[0], &addrinfo_len, sizeof(addrinfo_len));  // 发送0长度表示失败
+            } 
+            // 遍历本地网口，发送到子进程
+            else {
                 res = res0;
                 while (res)
                 {
                     addrinfo_len++;
                     res = res->ai_next;
                 }
+
+                // 发送可用地址数量
                 must_write(socks[0], &addrinfo_len, sizeof(addrinfo_len));
 
                 res = res0;
                 while (res)
                 {
-                    must_write(socks[0], &res->ai_flags, sizeof(res->ai_flags));
-                    must_write(socks[0], &res->ai_family, sizeof(res->ai_family));
-                    must_write(socks[0], &res->ai_socktype, sizeof(res->ai_socktype));
-                    must_write(socks[0], &res->ai_protocol, sizeof(res->ai_protocol));
-                    must_write(socks[0], &res->ai_addrlen, sizeof(res->ai_addrlen));
-                    must_write(socks[0], res->ai_addr, res->ai_addrlen);
+                    must_write(socks[0], &res->ai_flags, sizeof(res->ai_flags));            // 发送标志
+                    must_write(socks[0], &res->ai_family, sizeof(res->ai_family));          // 发送地址族
+                    must_write(socks[0], &res->ai_socktype, sizeof(res->ai_socktype));      // 发送socket类型
+                    must_write(socks[0], &res->ai_protocol, sizeof(res->ai_protocol));      // 发送协议
+                    must_write(socks[0], &res->ai_addrlen, sizeof(res->ai_addrlen));        // 发送地址长度
+                    must_write(socks[0], res->ai_addr, res->ai_addrlen);                    // 发送地址数据
                     res = res->ai_next;
                 }
                 freeaddrinfo(res0);
             }
             break;
 
+        // 运行脚本命令
         case PRIV_RUN_SCRIPT:
-            must_read(socks[0], &script_argc, sizeof(script_argc));
+            must_read(socks[0], &script_argc, sizeof(script_argc));     // 读取脚本参数数量
             if (script_argc <= 0)
                 _exit(0);
 
+            // 分配参数数组内存
             if ((script_argv = calloc(script_argc + 1, sizeof(char *))) == NULL)
                 _exit(0);
 
-            /* read script argumuments */
+            /* 读取脚本参数 遍历每个参数 read script argumuments */
             for(i = 0; i < script_argc; i++) {
-                must_read(socks[0], &len, sizeof(len));
+                must_read(socks[0], &len, sizeof(len));         // 读取参数长度
                 if (len <= 0)
                     _exit(0);
-                if ((script_argv[i] = malloc(len)) == NULL)
+                if ((script_argv[i] = malloc(len)) == NULL)     // 分配参数内存
                     _exit(0);
-                must_read(socks[0], script_argv[i], len);
+                must_read(socks[0], script_argv[i], len);       // 读取参数内容
                 script_argv[i][len-1] = '\0';
             }
-            script_argv[i] = NULL;
+            script_argv[i] = NULL;      // 参数数组以NULL结尾
 
-            /* Read environment */
-            must_read(socks[0], &env_len, sizeof(env_len));
+            /* 读取环境变量 Read environment */
+            must_read(socks[0], &env_len, sizeof(env_len));     // 读取环境变量数量
             if (env_len <= 0)
                 _exit(0);
+            // 分配环境变量数组内存
             if ((script_env = calloc(env_len + 1, sizeof(char *))) == NULL)
                 _exit(0);
+            // 遍历每个环境变量
             for(i = 0; i < env_len; i++) {
-                must_read(socks[0], &len, sizeof(len));
+                must_read(socks[0], &len, sizeof(len));         // 读取环境变量长度
                 if (len <= 0)
                     _exit(0);
-                if ((script_env[i] = malloc(len)) == NULL)
+                if ((script_env[i] = malloc(len)) == NULL)      // 分配环境变量内存
                     _exit(0);
-                must_read(socks[0], script_env[i], len);
+                must_read(socks[0], script_env[i], len);        // 读取环境变量内容
                 script_env[i][len - 1] = '\0';
             }
 
@@ -426,24 +468,28 @@ priv_init(char *argv[], char *username)
                 i = -1;
             else
                 i = root_launch_script(script_path,
-                    script_argc, script_argv, script_env);
-            must_write(socks[0], &i, sizeof(i));
-            for(i = 0; i < script_argc && script_argv[i]; i++)
+                    script_argc, script_argv, script_env);      // 启动脚本
+            must_write(socks[0], &i, sizeof(i));                // 发送执行结果
+            for(i = 0; i < script_argc && script_argv[i]; i++)  // 释放参数内存
                 free(script_argv[i]);
             free(script_argv);
-            for(i = 0; i < env_len && script_env[i]; i++)
+            for(i = 0; i < env_len && script_env[i]; i++)       // 释放环境变量内存
                 free(script_env[i]);
-            free(script_env);
-            break;
-        case PRIV_RELOAD_RESOLVER:
-#ifdef HAVE_DECL_RES_INIT
-            res_init();
-#endif
+            free(script_env);                                   // 释放环境变量数组
             break;
 
+        // 重新加载解析器命令
+        case PRIV_RELOAD_RESOLVER:
+#ifdef HAVE_DECL_RES_INIT
+            res_init();                                         // 重新初始化解析器
+#endif
+            break;
+        
+        // 设置运行状态命令
         case PRIV_SET_RUNNING_STATE:
-            increase_state(STATE_RUNNING);
+            increase_state(STATE_RUNNING);                      // 提升状态到运行状态
 #ifdef HAVE_PLEDGE
+            // 进一步限制权限
             if (pledge("rpath stdio dns sendfd exec proc", NULL) != 0) {
                 err(1, "pledge");
             }
@@ -543,6 +589,7 @@ increase_state(int state)
 }
 
 /* Open mlvpn config file for reading */
+// MLVPN项目中 特权分离机制 的核心组件之一，用于安全地打开配置文件
 int
 priv_open_config(char *config_path)
 {
@@ -554,13 +601,13 @@ priv_open_config(char *config_path)
 
     len = strlen(config_path) + 1;
 
-    cmd = PRIV_OPEN_CONFIG;
-    must_write(priv_fd, &cmd, sizeof(cmd));
+    cmd = PRIV_OPEN_CONFIG;                     // 设置命令类型为打开配置文件
+    must_write(priv_fd, &cmd, sizeof(cmd));     // 向特权进程发送命令类型
 
-    must_write(priv_fd, &len, sizeof(len));
-    must_write(priv_fd, config_path, len);
+    must_write(priv_fd, &len, sizeof(len));     // 发送路径长度
+    must_write(priv_fd, config_path, len);      // 发送配置文件路径
 
-    fd = receive_fd(priv_fd);
+    fd = receive_fd(priv_fd);                   // 接收特权进程传递的文件描述符
     return fd;
 }
 
@@ -846,6 +893,8 @@ must_read(int fd, void *buf, size_t n)
 
 /* Write data with the assertion that it all has to be written, or
  * else abort the process.  Based on atomicio() from openssh. */
+
+// must的含义：确保写入操作必须成功完成，否则进程退出
 static void
 must_write(int fd, void *buf, size_t n)
 {
@@ -857,7 +906,7 @@ must_write(int fd, void *buf, size_t n)
         res = write(fd, s + pos, n - pos);
         switch (res) {
         case -1:
-            if (errno == EINTR || errno == EAGAIN)
+            if (errno == EINTR || errno == EAGAIN)      // 可恢复的错误
                 continue;
             // fall through
         case 0:
