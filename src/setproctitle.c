@@ -51,7 +51,7 @@ static size_t argv_env_len = 0;
 #endif /* HAVE_SETPROCTITLE */
 
 /*
- * 修改在ps命令中显示的进程给你名称
+ * 修改在ps命令中显示的进程名称
  **/
 void
 compat_init_setproctitle(int argc, char *argv[])

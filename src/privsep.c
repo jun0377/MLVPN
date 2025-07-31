@@ -74,13 +74,13 @@ enum priv_state {
 };
 
 enum cmd_types {
-    PRIV_OPEN_CONFIG,   /* open config file for reading only */
-    PRIV_INIT_SCRIPT,   /* set allowed status script path */
-    PRIV_OPEN_TUN,      /* open tun/tap device */
-    PRIV_RUN_SCRIPT,    /* run status script */
-    PRIV_RELOAD_RESOLVER,
-    PRIV_GETADDRINFO,
-    PRIV_SET_RUNNING_STATE /* ready for maximum security */
+    PRIV_OPEN_CONFIG,               // 只读模式打开配置文件       /* open config file for reading only */
+    PRIV_INIT_SCRIPT,               // 初始化脚本路径命令        /* set allowed status script path */
+    PRIV_OPEN_TUN,                  // 打开TUN/TAP设备命令      /* open tun/tap device */
+    PRIV_RUN_SCRIPT,                // 运行脚本命令             /* run status script */
+    PRIV_RELOAD_RESOLVER,           // 重新加载DNS解析器命
+    PRIV_GETADDRINFO,               // 获取地址信息命令
+    PRIV_SET_RUNNING_STATE          // 设置运行状态命令         /* ready for maximum security */
 };
 
 /* Error message for some communication between processes */
@@ -869,6 +869,8 @@ may_read(int fd, void *buf, size_t n)
 
 /* Read data with the assertion that it all must come through, or
  * else abort the process.  Based on atomicio() from openssh. */
+
+// must的含义：确保读取操作必须成功完成，否则进程退出
 static void
 must_read(int fd, void *buf, size_t n)
 {

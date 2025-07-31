@@ -11,6 +11,7 @@
 #include "tuntap_generic.h"
 #include "tool.h"
 
+// 将本地网络流量捕获并转发到远程隧道
 int
 mlvpn_tuntap_read(struct tuntap_s *tuntap)
 {

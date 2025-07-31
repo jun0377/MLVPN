@@ -51,6 +51,7 @@ mlvpn_cb_free(circular_buffer_t *buf)
 }
 
 /* Re-initialize the ring buffer to default values */
+// 重置环形缓冲区
 void
 mlvpn_cb_reset(circular_buffer_t *buf)
 {
@@ -129,6 +130,7 @@ mlvpn_pktbuffer_free(circular_buffer_t *buf)
     mlvpn_cb_free(buf);
 }
 
+// 重置环形缓冲区
 void
 mlvpn_pktbuffer_reset(circular_buffer_t *buf)
 {

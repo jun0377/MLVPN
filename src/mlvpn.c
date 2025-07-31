@@ -82,7 +82,7 @@ static char **saved_argv;
 struct ev_loop *loop;
 static ev_timer reorder_drain_timeout;
 static ev_timer reorder_adjust_rtt_timeout;
-struct rtunhead rtuns;                          // tun隧道链表头
+struct rtunhead rtuns;                          // tun隧道链表头，维护多个tun隧道
 char *status_command = NULL;
 char *process_title = NULL;
 int logdebug = 0;
@@ -1286,14 +1286,19 @@ mlvpn_rtun_adjust_reorder_timeout(EV_P_ ev_timer *w, int revents)
     }
 }
 
+// 这是一个libev事件循环的回调函数，当TUN/TAP设备有读写事件时被调用
 static void
 tuntap_io_event(EV_P_ ev_io *w, int revents)
 {
+    // 读事件
     if (revents & EV_READ) {
         mlvpn_tuntap_read(&tuntap);
-    } else if (revents & EV_WRITE) {
-        mlvpn_tuntap_write(&tuntap);
+    } 
+    // 写事件
+    else if (revents & EV_WRITE) {
+        mlvpn_tuntap_write(&tuntap);                    // 向TUN/TAP设备写入数据包，将从隧道接收的数据注入本地网络
         /* Nothing else to read */
+        // 如果发送缓冲区为空，停止监听写事件以避免不必要的CPU占用
         if (mlvpn_cb_is_empty(tuntap.sbuf)) {
             ev_io_stop(EV_A_ &tuntap.io_write);
         }
@@ -1317,6 +1322,7 @@ mlvpn_tuntap_init()
     ev_init(&tuntap.io_write, tuntap_io_event);                         // 写事件监听器，当 TUN/TAP 设备可写且有数据待发送时触发，处理向虚拟网络接口发送数据包
 }
 
+// 更改进程名称
 static void
 update_process_title()
 {
@@ -1330,27 +1336,33 @@ update_process_title()
     memset(title, 0, sizeof(title));
     if (*process_title)
         strlcat(title, process_title, sizeof(title));
+
+    // 遍历全局隧道链表rtuns中的每个隧道节点
     LIST_FOREACH(t, &rtuns, entries)
     {
         switch(t->status) {
+            // 隧道状态为认证成功且连接正常
             case MLVPN_AUTHOK:
-                s = "@";
+                s = "@";                    // 设置状态符号为"@"，表示隧道工作正常
                 break;
+            // 隧道状态为高延迟
             case MLVPN_HIGH_LATENCY:
+            // 隧道状态为丢包严重
             case MLVPN_LOSSY:
-                s = "~";
+                s = "~";                    // 设置状态符号为"~"，表示隧道连接质量不佳但仍可用
                 break;
             default:
-                s = "!";
+                s = "!";                    // 设置状态符号为"!"，表示隧道连接有问题或未连接
                 break;
         }
+        // 空格+状态符号+隧道名称
         len = snprintf(status, sizeof(status) - 1, " %s%s", s, t->name);
         if (len) {
             status[len] = 0;
-            strlcat(title, status, sizeof(title));
+            strlcat(title, status, sizeof(title));  // 将当前隧道的状态字符串安全地追加到总标题字符串中
         }
     }
-    setproctitle("%s", title);
+    setproctitle("%s", title);      // 更新进程名称
 }
 
 static void
@@ -1438,7 +1450,7 @@ main(int argc, char **argv)
         switch (c)
         {
         case 1:  /* --natural-title */
-            mlvpn_options.change_process_title = 0;             // 禁用进程标题更改
+            mlvpn_options.change_process_title = 0;             // 禁止修改进程名称
             break;
         case 2:  /* --debug */
             mlvpn_options.debug = 1;                            // 启用调试模式
@@ -1540,7 +1552,7 @@ main(int argc, char **argv)
 
     LIST_INIT(&rtuns);                                          // 初始化隧道链表
     priv_init(argv, mlvpn_options.unpriv_user);                 // 初始化权限分离：创建特权进程和非特权进程
-    if (mlvpn_options.change_process_title)                     // 更新进程标题（现在运行在非特权进程中）
+    if (mlvpn_options.change_process_title)                     // 更新进程名称
         update_process_title();
 
     freebuf = mlvpn_freebuffer_init(512);                       // 初始化空闲缓冲区池，512个MLVPN数据包大小
