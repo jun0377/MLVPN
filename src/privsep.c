@@ -656,6 +656,8 @@ int priv_open_tun(int tuntapmode, char *devname, int mtu)
 
 /* Name/service to address translation.  Response is placed into addr, and
  * the length is returned (zero on error) */
+
+// 在特权进程中解析本地地址
 int
 priv_getaddrinfo(char *host, char *serv, struct addrinfo **addrinfo,
                  struct addrinfo *hints)
@@ -665,9 +667,11 @@ priv_getaddrinfo(char *host, char *serv, struct addrinfo **addrinfo,
     size_t i, hostname_len, servname_len, ret_len;
     struct addrinfo *new, *last = NULL;
 
+    /* 安全检查：确保在非特权进程中调用 */
     if (priv_fd < 0)
         errx(1, "%s: called from privileged portion", "priv_getaddrinfo");
 
+    /* 处理主机名参数 */
     if (host) {
         strlcpy(hostcpy, host, sizeof(hostcpy));
         hostname_len = strlen(hostcpy) + 1;
@@ -675,12 +679,15 @@ priv_getaddrinfo(char *host, char *serv, struct addrinfo **addrinfo,
         hostname_len = 0;
     }
 
+    /* 处理服务名/端口参数 */
     if (serv) {
         strlcpy(servcpy, serv, sizeof(servcpy));
         servname_len = strlen(servcpy) + 1;
     } else {
         servname_len = 0;
     }
+    
+    /* 向特权进程发送getaddrinfo请求 */
     cmd = PRIV_GETADDRINFO;
     must_write(priv_fd, &cmd, sizeof(cmd));
     must_write(priv_fd, &hostname_len, sizeof(hostname_len));
@@ -698,19 +705,21 @@ priv_getaddrinfo(char *host, char *serv, struct addrinfo **addrinfo,
     if (!ret_len)
         return 0;
 
+    /* 接收并构建地址信息链表 */
     for (i=0; i < ret_len; i++)
     {
-        new = malloc(sizeof(struct addrinfo));
-        must_read(priv_fd, &new->ai_flags, sizeof(new->ai_flags));
-        must_read(priv_fd, &new->ai_family, sizeof(new->ai_family));
-        must_read(priv_fd, &new->ai_socktype, sizeof(new->ai_socktype));
-        must_read(priv_fd, &new->ai_protocol, sizeof(new->ai_protocol));
-        must_read(priv_fd, &new->ai_addrlen, sizeof(new->ai_addrlen));
-        new->ai_addr = (struct sockaddr *)malloc(new->ai_addrlen);
-        must_read(priv_fd, new->ai_addr, new->ai_addrlen);
-        new->ai_canonname = NULL;
+        new = malloc(sizeof(struct addrinfo));                              // 为新地址信息节点分配内存
+        must_read(priv_fd, &new->ai_flags, sizeof(new->ai_flags));          // 读取地址标志
+        must_read(priv_fd, &new->ai_family, sizeof(new->ai_family));        // 读取地址族（IPv4/IPv6）
+        must_read(priv_fd, &new->ai_socktype, sizeof(new->ai_socktype));    // 读取套接字类型
+        must_read(priv_fd, &new->ai_protocol, sizeof(new->ai_protocol));    // 读取协议类型
+        must_read(priv_fd, &new->ai_addrlen, sizeof(new->ai_addrlen));      // 读取地址长度
+        new->ai_addr = (struct sockaddr *)malloc(new->ai_addrlen);          // 为地址结构分配内存
+        must_read(priv_fd, new->ai_addr, new->ai_addrlen);                  // 读取实际地址数据
+        new->ai_canonname = NULL;   
         new->ai_next = NULL;
 
+        /* 构建链表结构 */
         if (i == 0)
             *addrinfo = new;
         if (last)

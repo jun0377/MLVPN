@@ -17,6 +17,8 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
 {
     ssize_t ret;
     u_char data[DEFAULT_MTU];
+
+    // 读一个MTU大小的数据
     ret = read(tuntap->fd, &data, DEFAULT_MTU);
     if (ret < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -34,6 +36,7 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
             (uint32_t)ret, tuntap->maxmtu);
         ret = tuntap->maxmtu;
     }
+
     return mlvpn_tuntap_generic_read(data, ret);
 }
 

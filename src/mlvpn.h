@@ -114,13 +114,17 @@ struct mlvpn_options_s
     uint32_t fallback_available;                                // 备用链路可用性标志（32位无符号整数），指示是否有备用隧道可用于故障转移
 };
 
+/**
+ * MLVPN 全局状态结构体
+ * 用于跟踪和管理整个 VPN 服务的运行状态信息
+ */
 struct mlvpn_status_s
 {
-    int fallback_mode;
-    int connected;
-    int initialized;
-    time_t start_time;
-    time_t last_reload;
+    int fallback_mode;          // 备用模式标志：1表示当前运行在备用模式（主要链路不可用），0表示正常模式
+    int connected;              // 连接状态标志：表示当前有多少个隧道处于已连接状态（MLVPN_AUTHOK及以上状态）
+    int initialized;            // 初始化状态标志：1表示MLVPN服务已完成初始化，0表示尚未初始化完成
+    time_t start_time;          // 服务启动时间戳：记录MLVPN服务启动的Unix时间戳，用于计算运行时长
+    time_t last_reload;         // 最后重载时间戳：记录最后一次重新加载配置文件的Unix时间
 };
 
 // CHAP认证状态

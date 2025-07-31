@@ -187,6 +187,7 @@ usage(char **argv)
     exit(2);
 }
 
+// 将套接字设置为非阻塞
 int
 mlvpn_sock_set_nonblocking(int fd)
 {
@@ -622,6 +623,7 @@ mlvpn_rtun_write(EV_P_ ev_io *w, int revents)
     }
 }
 
+// 创建新的隧道
 mlvpn_tunnel_t *
 mlvpn_rtun_new(const char *name,
                const char *bindaddr, const char *bindport, uint32_t bindfib,
@@ -633,7 +635,7 @@ mlvpn_rtun_new(const char *name,
     mlvpn_tunnel_t *new;
 
     /* Some basic checks */
-    if (server_mode)
+    if (server_mode)                         // 服务器模式检查
     {
         if (bindport == NULL)
         {
@@ -641,7 +643,9 @@ mlvpn_rtun_new(const char *name,
                 "cannot initialize socket without bindport");
             return NULL;
         }
-    } else {
+    } 
+    // 客户端模式必须指定目标地址和端口
+    else {
         if (destaddr == NULL || destport == NULL)
         {
             log_warnx(NULL,
@@ -650,15 +654,15 @@ mlvpn_rtun_new(const char *name,
         }
     }
 
-    new = (mlvpn_tunnel_t *)calloc(1, sizeof(mlvpn_tunnel_t));
+    new = (mlvpn_tunnel_t *)calloc(1, sizeof(mlvpn_tunnel_t));      // 分配并清零隧道结构体内存
     if (! new)
         fatal(NULL, "calloc failed");
     /* other values are enforced by calloc to 0/NULL */
-    new->name = strdup(name);
+    new->name = strdup(name);                                       // 复制隧道名称字符串
     new->fd = -1;
     new->server_mode = server_mode;
-    new->weight = 1;
-    new->status = MLVPN_DISCONNECTED;
+    new->weight = 1;                                                // 设置默认权重为1（负载均衡用）
+    new->status = MLVPN_DISCONNECTED;                               // 初始状态为断开连接
     new->addrinfo = NULL;
     new->sentpackets = 0;
     new->sentbytes = 0;
@@ -671,8 +675,8 @@ mlvpn_rtun_new(const char *name,
     new->rttvar = 500;
     new->rtt_hit = 0;
     new->seq_last = 0;
-    new->seq_vect = (uint64_t) -1;
-    new->flow_id = crypto_nonce_random();
+    new->seq_vect = (uint64_t) -1;                                  // 序列号向量（全1表示初始状态）
+    new->flow_id = crypto_nonce_random();                           // 生成随机流ID（加密随机数）
     new->bandwidth = bandwidth;
     new->fallback_only = fallback_only;
     new->loss_tolerence = loss_tolerence;
@@ -686,21 +690,31 @@ mlvpn_rtun_new(const char *name,
         strlcpy(new->destaddr, destaddr, sizeof(new->destaddr));
     if (destport)
         strlcpy(new->destport, destport, sizeof(new->destport));
-    new->sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);
-    new->hpsbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);
-    mlvpn_rtun_tick(new);
+
+    /* 数据包缓冲区初始化 - 双缓冲区设计 */
+    new->sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);               // 初始化标准发送缓冲区
+    new->hpsbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);             // 初始化高优先级发送缓冲区
+
+    mlvpn_rtun_tick(new);       // 更新隧道时间戳（用于超时检测）
+
+    /* 超时和心跳配置 */
     new->timeout = timeout;
     new->next_keepalive = 0;
-    LIST_INSERT_HEAD(&rtuns, new, entries);
-    new->io_read.data = new;
-    new->io_write.data = new;
-    new->io_timeout.data = new;
-    ev_init(&new->io_read, mlvpn_rtun_read);
-    ev_init(&new->io_write, mlvpn_rtun_write);
+
+    LIST_INSERT_HEAD(&rtuns, new, entries);     // 将新隧道插入全局隧道链表头部
+
+    /* libev事件循环集成 - I/O事件处理器初始化 */
+    new->io_read.data = new;                    // 读事件处理器关联隧道实例
+    new->io_write.data = new;                   // 写事件处理器关联隧道实例
+    new->io_timeout.data = new;                 // 超时事件处理器关联隧道实例
+
+    /* 事件处理器初始化 */
+    ev_init(&new->io_read, mlvpn_rtun_read);                    // 初始化读事件处理器
+    ev_init(&new->io_write, mlvpn_rtun_write);                  // 初始化写事件处理器
     ev_timer_init(&new->io_timeout, mlvpn_rtun_check_timeout,
-        0., MLVPN_IO_TIMEOUT_DEFAULT);
-    ev_timer_start(EV_A_ &new->io_timeout);
-    update_process_title();
+        0., MLVPN_IO_TIMEOUT_DEFAULT);                          // 初始化超时定时器（默认超时间隔）
+    ev_timer_start(EV_A_ &new->io_timeout);                     // 启动超时检测定时器
+    update_process_title();                                     // 更新进程名称
     return new;
 }
 
@@ -805,6 +819,7 @@ mlvpn_rtun_bind(mlvpn_tunnel_t *t)
     return 0;
 }
 
+// 启动MLVPN隧道连接
 static int
 mlvpn_rtun_start(mlvpn_tunnel_t *t)
 {
@@ -814,12 +829,16 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
 #if defined(HAVE_FREEBSD) || defined(HAVE_OPENBSD)
     int fib = t->bindfib;
 #endif
-    fd = t->fd;
+    fd = t->fd;                 // 获取隧道当前的文件描述符
+
+    /* 根据服务器/客户端模式选择地址和端口 */
     if (t->server_mode)
     {
+        // 服务器模式
         addr = t->bindaddr;
         port = t->bindport;
     } else {
+        // 客户端模式
         addr = t->destaddr;
         port = t->destport;
     }
@@ -829,6 +848,7 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
 
+    /* 执行地址解析（通过特权分离进程） */
     ret = priv_getaddrinfo(addr, port, &t->addrinfo, &hints);
     if (ret <= 0 || !t->addrinfo)
     {
@@ -837,10 +857,14 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         return -1;
     }
 
-    res = t->addrinfo;
+    res = t->addrinfo;  // 获取地址解析结果链表
+
+    // 遍历所有可用地址，直到找到第一个socket函数成功的地址
     while (res)
     {
         /* creation de la socket(2) */
+
+        /* 创建UDP套接字 */
         if ( (fd = socket(t->addrinfo->ai_family,
                           t->addrinfo->ai_socktype,
                           t->addrinfo->ai_protocol)) < 0)
@@ -859,23 +883,26 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
             }
 #endif
             t->fd = fd;
-            break;
+            break;              // 跳出循环，使用第一个成功的地址
         }
         res = res->ai_next;
     }
 
+    // 所有地址都失败
     if (fd < 0) {
         log_warnx("dns", "%s connection failed. Check DNS?",
             t->name);
         goto error;
     }
 
-    /* setup non blocking sockets */
+    // 地址复用
     socklen_t val = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(socklen_t)) < 0) {
         log_warn(NULL, "%s setsockopt SO_REUSEADDR failed", t->name);
         goto error;
     }
+
+    /* 如果指定了绑定地址，执行绑定操作 */
     if (*t->bindaddr) {
         if (mlvpn_rtun_bind(t) < 0) {
             goto error;
@@ -883,18 +910,24 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     }
 
     /* set non blocking after connect... May lockup the entiere process */
+
+    /* 设置非阻塞模式（在连接后设置，避免阻塞整个进程） */
     mlvpn_sock_set_nonblocking(fd);
-    mlvpn_rtun_tick(t);
-    ev_io_set(&t->io_read, fd, EV_READ);
-    ev_io_set(&t->io_write, fd, EV_WRITE);
-    ev_io_start(EV_A_ &t->io_read);
-    t->io_timeout.repeat = MLVPN_IO_TIMEOUT_DEFAULT;
+    mlvpn_rtun_tick(t);                                 // 更新隧道时间戳
+
+    /* 配置libev事件监听器 */
+    ev_io_set(&t->io_read, fd, EV_READ);                // 设置读事件监听器
+    ev_io_set(&t->io_write, fd, EV_WRITE);              // 设置写事件监听器
+    ev_io_start(EV_A_ &t->io_read);                     // 启动读事件监听
+    t->io_timeout.repeat = MLVPN_IO_TIMEOUT_DEFAULT;    // 重置超时间隔为默认值
     return 0;
 error:
     if (t->fd > 0) {
         close(t->fd);
         t->fd = -1;
     }
+
+    /* 指数退避：增加超时重试间隔 */
     if (t->io_timeout.repeat < MLVPN_IO_TIMEOUT_MAXIMUM)
         t->io_timeout.repeat *= MLVPN_IO_TIMEOUT_INCREMENT;
     return -1;
@@ -1130,11 +1163,18 @@ mlvpn_rtun_tick_connect(mlvpn_tunnel_t *t)
     }
 }
 
+/**
+ * MLVPN隧道选择函数
+ * 功能：为数据包选择最合适的隧道进行传输
+ * 返回值：选中的隧道指针，如果没有可用隧道则返回NULL
+ * 
+ * 这是一个简单的包装函数，实际的选择逻辑委托给加权轮询算法
+ */
 mlvpn_tunnel_t *
 mlvpn_rtun_choose()
 {
     mlvpn_tunnel_t *tun;
-    tun = mlvpn_rtun_wrr_choose();
+    tun = mlvpn_rtun_wrr_choose();      // 加权轮询算法选择隧道，基于带宽权重和连接状态进行负载均衡
     return tun;
 }
 

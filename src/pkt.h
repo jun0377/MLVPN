@@ -7,11 +7,25 @@
 #define DEFAULT_MTU 1500
 
 enum {
-    MLVPN_PKT_AUTH,
-    MLVPN_PKT_AUTH_OK,
-    MLVPN_PKT_KEEPALIVE,
-    MLVPN_PKT_DATA,
-    MLVPN_PKT_DISCONNECT
+    MLVPN_PKT_AUTH,             // 认证请求包：客户端向服务器发送的身份验证请求
+                                // 包含加密的认证凭据，用于建立安全隧道连接
+                                // 通常在连接建立阶段的第一步发送
+
+    MLVPN_PKT_AUTH_OK,          // 认证确认包：服务器向客户端发送的认证成功响应
+                                // 表示身份验证通过，隧道连接已建立
+                                // 客户端收到此包后可开始发送数据流量
+
+    MLVPN_PKT_KEEPALIVE,        // 心跳保活包：用于检测隧道连接的活跃状态
+                                // 定期发送以防止NAT/防火墙超时断开连接
+                                // 同时用于测量RTT和检测网络质量
+
+    MLVPN_PKT_DATA,             // 数据传输包：承载实际用户网络流量的数据包
+                                // 包含从TUN/TAP设备读取的IP数据包
+                                // 这是MLVPN隧道中最主要的数据包类型
+
+    MLVPN_PKT_DISCONNECT        // 断开连接包：通知对端即将关闭隧道连接
+                                // 用于优雅地终止连接，清理资源
+                                // 避免连接异常中断导致的资源泄漏
 };
 
 // MLVPN数据包结构

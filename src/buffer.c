@@ -59,12 +59,21 @@ mlvpn_cb_reset(circular_buffer_t *buf)
     buf->end = 0;
 }
 
+/**
+ * 检查循环缓冲区是否已满
+ * 
+ * 功能说明：
+ * - 判断环形缓冲区是否达到最大容量，无法再写入新数据
+ * - 使用经典的"留一个空位"算法来区分满/空状态
+ * 
+ */
 int
 mlvpn_cb_is_full(const circular_buffer_t *buf)
 {
     return (buf->end + 1) % buf->size == buf->start;
 }
 
+// 检查缓冲区是否为空
 int
 mlvpn_cb_is_empty(const circular_buffer_t *buf)
 {
@@ -75,11 +84,20 @@ mlvpn_cb_is_empty(const circular_buffer_t *buf)
  * data must point to a valid location in memory
  * where the actual data is stored.
 */
+
+/**
+ * 从循环缓冲区读取数据并释放该位置
+ * 
+ * 功能说明：
+ * - 从环形缓冲区的读指针位置获取数据
+ * - 自动推进读指针到下一个位置，释放当前读取的存储空间
+ * - 这是一个"消费型"读取操作，读取后数据位置变为可写状态
+ */
 void *
 mlvpn_cb_read(circular_buffer_t *buf, void **data)
 {
-    void *ret = data[buf->start];
-    buf->start = (buf->start + 1) % buf->size;
+    void *ret = data[buf->start];               // 获取读指针位置的数据：从data数组中取出start索引对应的数据指针
+    buf->start = (buf->start + 1) % buf->size;  // 推进读指针到下一个位置：使用模运算处理环形回绕，当start达到size时回到0
     return ret;
 }
 
@@ -87,13 +105,23 @@ mlvpn_cb_read(circular_buffer_t *buf, void **data)
 /* Register & return a new packet.
  * See comment in cb_read for **data signification.
  */
+
+/**
+ * 向循环缓冲区写入数据并注册新的数据包
+ * 
+ * 功能说明：
+ * - 获取环形缓冲区写指针位置的存储空间用于写入新数据
+ * - 自动推进写指针到下一个位置
+ * - 当缓冲区满时，自动覆盖最旧的数据（覆盖模式）
+ * - 这是一个"生产型"写入操作，为新数据分配存储位置
+ */
 void *
 mlvpn_cb_write(circular_buffer_t *buf, void **data)
 {
-    void *ret = data[buf->end];
-    buf->end = (buf->end + 1) % buf->size;
-    if (buf->end == buf->start)
-        buf->start = (buf->start + 1) % buf->size;
+    void *ret = data[buf->end];                     // 获取写指针位置的数据对象：从data数组中取出end索引对应的数据指针，用于存储新数据
+    buf->end = (buf->end + 1) % buf->size;          // 推进写指针到下一个位置：使用模运算处理环形回绕，当end达到size时回到0
+    if (buf->end == buf->start)                     // 检查缓冲区是否已满：写指针追上读指针表示缓冲区已满
+        buf->start = (buf->start + 1) % buf->size;  // 覆盖模式：强制推进读指针，丢弃最旧的数据，为新数据腾出空间
     return ret;
 }
 
@@ -122,6 +150,7 @@ mlvpn_pktbuffer_init(int size)
     return buf;
 }
 
+// 释放环形缓冲区
 void
 mlvpn_pktbuffer_free(circular_buffer_t *buf)
 {
@@ -137,6 +166,7 @@ mlvpn_pktbuffer_reset(circular_buffer_t *buf)
     mlvpn_cb_reset(buf);
 }
 
+// 向缓冲区写入新的包
 mlvpn_pkt_t *
 mlvpn_pktbuffer_write(circular_buffer_t *buf)
 {
@@ -149,6 +179,7 @@ mlvpn_pktbuffer_write(circular_buffer_t *buf)
     return pkt;
 }
 
+// 从缓冲区中读一个包
 mlvpn_pkt_t *
 mlvpn_pktbuffer_read(circular_buffer_t *buf)
 {
