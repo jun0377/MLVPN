@@ -107,6 +107,8 @@ compat_init_setproctitle(int argc, char *argv[])
 }
 
 #ifndef HAVE_SETPROCTITLE
+
+// 设置进程名称
 void
 setproctitle(const char *fmt, ...)
 {

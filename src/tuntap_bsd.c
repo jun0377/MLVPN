@@ -14,6 +14,7 @@
 #include "tuntap_generic.h"
 #include "tool.h"
 
+// 从 TUN/TAP 设备读取数据包
 int
 mlvpn_tuntap_read(struct tuntap_s *tuntap)
 {
@@ -22,8 +23,10 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
     struct iovec iov[2];
     uint32_t type;
 
+    // iov[0] 用于存储数据包的类型信息
     iov[0].iov_base = &type;
     iov[0].iov_len = sizeof(type);
+    // iov[1] 用于存储实际的数据包内容
     iov[1].iov_base = &data;
     iov[1].iov_len = DEFAULT_MTU;
     ret = readv(tuntap->fd, iov, 2);
@@ -46,6 +49,7 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
     return mlvpn_tuntap_generic_read(data, ret);
 }
 
+// 向 TUN/TAP 设备写入数据包
 int
 mlvpn_tuntap_write(struct tuntap_s *tuntap)
 {
@@ -83,6 +87,8 @@ mlvpn_tuntap_write(struct tuntap_s *tuntap)
     }
     return datalen;
 }
+
+// 分配和初始化 TUN/TAP 设备
 int
 mlvpn_tuntap_alloc(struct tuntap_s *tuntap)
 {
@@ -134,6 +140,8 @@ mlvpn_tuntap_alloc(struct tuntap_s *tuntap)
  *
  * Compatibility: BSD
  */
+
+// 以 root 权限打开 TUN/TAP 设备
 int
 root_tuntap_open(int tuntapmode, char *devname, int mtu)
 {
@@ -154,6 +162,7 @@ root_tuntap_open(int tuntapmode, char *devname, int mtu)
             return -1;
         }
 #else
+        // 设置点对点模式 和 多播支持
         int flags;
         flags = IFF_POINTOPOINT | IFF_MULTICAST;
         if (ioctl(fd, TUNSIFMODE, &flags) < 0) {
@@ -162,6 +171,8 @@ root_tuntap_open(int tuntapmode, char *devname, int mtu)
             return -1;
         }
 
+        // 启用 TUN 设备的协议头模式,启用后，每个数据包前会包含 4 字节的协议类型信息
+        // 这就是为什么要用readv/writev处理type
         flags = 1;
         if (ioctl(fd, TUNSIFHEAD, &flags) < 0)
         {

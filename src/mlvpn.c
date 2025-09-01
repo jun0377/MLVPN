@@ -1079,6 +1079,7 @@ mlvpn_update_status()
     }
 }
 
+// 发送隧道认证包，进入MLVPN协议握手流程
 static void
 mlvpn_rtun_challenge_send(mlvpn_tunnel_t *t)
 {
@@ -1135,22 +1136,32 @@ mlvpn_rtun_send_auth(mlvpn_tunnel_t *t)
     }
 }
 
+// MLVPN的隧道连接逻辑
 static void
 mlvpn_rtun_tick_connect(mlvpn_tunnel_t *t)
 {
     ev_tstamp now = ev_now(EV_DEFAULT_UC);
+    // 服务器模式
     if (t->server_mode) {
         if (t->fd < 0) {
+            // 启动隧道连接
             if (mlvpn_rtun_start(t) == 0) {
-                t->conn_attempts = 0;
-            } else {
+                t->conn_attempts = 0;       // 连接成功，重置连接计数器
+            } 
+            // 连接失败，return
+            else {
                 return;
             }
         }
-    } else {
+    } 
+    // 客户端模式
+    else {
+        // 隧道尚未完成认证
         if (t->status < MLVPN_AUTHOK) {
-            t->conn_attempts++;
-            t->last_connection_attempt = now;
+            t->conn_attempts++;                     // 重试次数++
+            t->last_connection_attempt = now;       // 更新重试时间戳
+            
+            // 尚未建立连接，建立之
             if (t->fd < 0) {
                 if (mlvpn_rtun_start(t) == 0) {
                     t->conn_attempts = 0;

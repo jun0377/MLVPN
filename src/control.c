@@ -75,6 +75,7 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl);
     "}%s\n"
 #define JSON_STATUS_ERROR_UNKNOWN_COMMAND "{\"error\": 'unknown command'}\n"
 
+// 处理客户端读写事件
 static void
 mlvpn_control_client_io_event(struct ev_loop *loop, ev_io *w, int revents)
 {
@@ -86,6 +87,7 @@ mlvpn_control_client_io_event(struct ev_loop *loop, ev_io *w, int revents)
     }
 }
 
+// 处理控制接口的新连接接受事件
 static void
 mlvpn_control_io_event(struct ev_loop *loop, ev_io *w, int revents)
 {
@@ -99,6 +101,7 @@ mlvpn_control_io_event(struct ev_loop *loop, ev_io *w, int revents)
     }
 }
 
+// 处理客户端连接超时事件
 static void
 mlvpn_control_timeout_event(struct ev_loop *loop, ev_timer *w, int revents)
 {
@@ -106,6 +109,7 @@ mlvpn_control_timeout_event(struct ev_loop *loop, ev_timer *w, int revents)
     ev_timer_again(EV_DEFAULT_UC, w);
 }
 
+// 关闭客户端连接
 void
 mlvpn_control_close_client(struct mlvpn_control *ctrl)
 {
@@ -116,6 +120,7 @@ mlvpn_control_close_client(struct mlvpn_control *ctrl)
     ctrl->clientfd = -1;
 }
 
+// 初始化控制接口
 void
 mlvpn_control_init(struct mlvpn_control *ctrl)
 {
@@ -275,6 +280,7 @@ mlvpn_control_init(struct mlvpn_control *ctrl)
     return;
 }
 
+// 接受新的客户端连接
 int
 mlvpn_control_accept(struct mlvpn_control *ctrl, int fd)
 {
@@ -319,6 +325,7 @@ mlvpn_control_accept(struct mlvpn_control *ctrl, int fd)
     return accepted;
 }
 
+// 检查客户端连接超时
 int
 mlvpn_control_timeout(struct mlvpn_control *ctrl)
 {
@@ -344,6 +351,7 @@ mlvpn_control_timeout(struct mlvpn_control *ctrl)
  * STOP tunX
  * RESTART tunX
  */
+// 解析客户端发送的命令
 void
 mlvpn_control_parse(struct mlvpn_control *ctrl, char *line)
 {
@@ -385,6 +393,7 @@ mlvpn_control_parse(struct mlvpn_control *ctrl, char *line)
         ctrl->close_after_write = 1;
 }
 
+// 生成Prometheus格式的监控指标
 void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
 {
     char buf[1024];
@@ -422,6 +431,7 @@ void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
     }
 }
 
+// 生成JSON格式的系统状态信息
 void mlvpn_control_write_status(struct mlvpn_control *ctrl)
 {
     char buf[1024];

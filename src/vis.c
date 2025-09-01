@@ -30,6 +30,19 @@
 
 /* OPENBSD ORIGINAL: lib/libc/gen/vis.c */
 
+/*
+- `vis.c` 是一个字符可视化编码库，来源于 OpenBSD 系统
+- 主要作用是将不可打印字符转换为可视化的字符串表示，用于安全地显示和传输数据
+
+核心功能：
+1. 字符编码转换 ：将控制字符、二进制数据等不可打印字符转换为可读的转义序列
+2. 多种编码格式支持 ：
+	 C 风格转义序列（ \n , \t , \r 等）
+	 八进制表示（ \123 ）
+	 控制字符表示（ ^C , ^M 等）
+	 Meta 字符表示（ M- 前缀）
+*/
+
 #if !defined(HAVE_STRNVIS) || defined(BROKEN_STRNVIS)
 
 #include <ctype.h>

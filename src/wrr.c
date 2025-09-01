@@ -51,18 +51,21 @@ int mlvpn_rtun_wrr_reset(struct rtunhead *head, int use_fallbacks)
     wrr.len = 0;
     LIST_FOREACH(t, head, entries)
     {
+        // 跳过不匹配模式的隧道，即是否使用备份链路
         if (t->fallback_only != use_fallbacks) {
             continue;
         }
         /* Don't select "LOSSY" tunnels, except if we are in fallback mode */
+        // 备用隧道只要认证通过（状态 ≥ AUTHOK）就可用,即使连接质量较差（LOSSY）也会被选中; 
+        // 主隧道必须状态完全正常,不接受有损耗的连接
         if ((t->fallback_only && t->status >= MLVPN_AUTHOK) ||
             (t->status == MLVPN_AUTHOK))
         {
             if (wrr.len >= MAX_TUNNELS)
                 fatalx("You have too many tunnels declared");
-            wrr.tunnel[wrr.len] = t;
-            wrr.tunval[wrr.len] = 0.0;
-            wrr.len++;
+            wrr.tunnel[wrr.len] = t;        // 存储隧道指针
+            wrr.tunval[wrr.len] = 0.0;      // 初始化虚拟权重值为0
+            wrr.len++;                      // 增加隧道计数
         }
     }
 
@@ -86,7 +89,6 @@ int mlvpn_rtun_wrr_reset(struct rtunhead *head, int use_fallbacks)
  * - 最小权重优先 ：总是选择当前权重值最小的隧道
  * - 权重衰减 ：所有隧道权重每次都减1，防止权重无限增长
  * - 权重重置 ：选中的隧道权重重新计算，确保下次选择的公平性
- * -
  * 
  * 负载均衡效果 ：
  * - 假设有两个隧道：
@@ -107,16 +109,16 @@ mlvpn_rtun_wrr_choose()
     if (idx < 0)
         fatalx("Programming error: wrr_min_index < 0!");
 
-    // 遍历所有可用隧道
+    // 遍历所有可用隧道，全局权重衰减，防止饥饿
+    // 确保长时间未被选中的隧道权重值最终会降到最低，给低权重隧道创造被选中的机会
     for(i = 0; i < wrr.len; i++)
     {   
-        // 如果隧道权重值大于0, 将权重值减1（模拟权重消耗，防止权重无限累积）
         if (wrr.tunval[i] > 0)
             wrr.tunval[i] -= 1;
     }
 
     // 重置选中隧道的权重值：100除以隧道配置权重
-    // 权重越高的隧道重置值越小，下次被选中概率越高,因为优选选择权重最小的隧道
+    // 配置权重越高的隧道重置值越小，下次被选中概率越高,因为优选选择权重最小的隧道
     wrr.tunval[idx] = (double) 100.0 / wrr.tunnel[idx]->weight;
     return wrr.tunnel[idx];
 }

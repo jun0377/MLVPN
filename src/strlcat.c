@@ -31,6 +31,8 @@
  * Returns strlen(src) + MIN(dsize, strlen(initial dst)).
  * If retval >= dsize, truncation occurred.
  */
+
+// 与strncat的区别在于，dsize指定的值dst的总长度，而strncat的第三个参数指定的是要追加的长度
 size_t
 strlcat(char *dst, const char *src, size_t dsize)
 {

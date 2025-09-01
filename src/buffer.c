@@ -216,6 +216,9 @@ mlvpn_freebuffer_init(unsigned int size)
     return freebuf;
 }
 
+/*
+ * 重置缓冲区，清空used_head链表节点，将其插入到free_head链表中
+*/
 void
 mlvpn_freebuffer_reset(freebuffer_t *freebuf) 
 {
@@ -228,6 +231,7 @@ mlvpn_freebuffer_reset(freebuffer_t *freebuf)
     freebuf->used = 0;
 }
 
+// 从空闲缓冲池获取一个空闲数据包
 mlvpn_pkt_t *
 mlvpn_freebuffer_get(freebuffer_t *freebuf)
 {
@@ -242,6 +246,7 @@ mlvpn_freebuffer_get(freebuffer_t *freebuf)
     }
 }
 
+// 回收数据包，将其返回到空闲池
 mlvpn_pkt_t *
 mlvpn_freebuffer_drain_used(freebuffer_t *freebuf)
 {
@@ -257,6 +262,7 @@ mlvpn_freebuffer_drain_used(freebuffer_t *freebuf)
     }
 }
 
+// 回收指定数据包pkt，回收到free_head链表
 void
 mlvpn_freebuffer_free(freebuffer_t *freebuf, mlvpn_pkt_t *pkt)
 {
