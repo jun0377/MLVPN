@@ -80,7 +80,7 @@ struct tuntap_s tuntap;
 char *_progname;
 static char **saved_argv;
 struct ev_loop *loop;
-static ev_timer reorder_drain_timeout;
+static ev_timer reorder_drain_timeout;			// 重排序缓冲区排空定时器
 static ev_timer reorder_adjust_rtt_timeout;
 struct rtunhead rtuns;                          // tun隧道链表头，维护多个tun隧道
 char *status_command = NULL;
@@ -206,6 +206,7 @@ mlvpn_sock_set_nonblocking(int fd)
     return ret;
 }
 
+// 更新隧道最新活动时间戳
 inline static 
 void mlvpn_rtun_tick(mlvpn_tunnel_t *t) {
     t->last_activity = ev_now(EV_DEFAULT_UC);
@@ -224,6 +225,7 @@ void mlvpn_rtun_inject_tuntap(mlvpn_pkt_t *pkt)
     }
 }
 
+// 重排序队列排空定时器处理函数
 static void
 mlvpn_rtun_reorder_drain_timeout(EV_P_ ev_timer *w, int revents)
 {
@@ -234,21 +236,25 @@ mlvpn_rtun_reorder_drain_timeout(EV_P_ ev_timer *w, int revents)
     }
 }
 
+// 重排序缓冲区排空函数，将重排序缓冲区中的包写入到tun/tap
+// reorder=1表示正常排空，reorder=0表示强制清空
 static uint32_t
 mlvpn_rtun_reorder_drain(uint32_t reorder)
 {
     int i;
-    uint32_t drained = 0;
-    mlvpn_pkt_t *drained_pkts[1024];
+    uint32_t drained = 0;				// 记录实际排出的数据包数量
+    mlvpn_pkt_t *drained_pkts[1024];	// 存储从重排序缓冲区排出的数据包指针（最多1024个）
     mlvpn_pkt_t *pkt;
     /* Try to drain packets */
-    if (reorder) {
+	// 正常排空
+	if (reorder) {
         drained = mlvpn_reorder_drain(reorder_buffer, drained_pkts, 1024);
         for(i = 0; i < drained; i++) {
             pkt = drained_pkts[i];
             mlvpn_rtun_inject_tuntap(pkt);
             mlvpn_freebuffer_free(freebuf, drained_pkts[i]);
         }
+	// 强制排空
     } else {
         while ((pkt = mlvpn_freebuffer_drain_used(freebuf)) != NULL) {
             drained++;
@@ -257,30 +263,39 @@ mlvpn_rtun_reorder_drain(uint32_t reorder)
         mlvpn_freebuffer_reset(freebuf);
         mlvpn_reorder_reset(reorder_buffer);
     }
+
+	// 缓冲区已清空，停止排空定时器已节省资源
     if (freebuf->used == 0) {
         ev_timer_stop(EV_A_ &reorder_drain_timeout);
     }
+
+	// 排空的数据包个数
     return drained;
 }
 
 /* Count the loss on the last 64 packets */
+// 跟踪最近64个数据包的连接状态
 static void
 mlvpn_loss_update(mlvpn_tunnel_t *tun, uint64_t seq)
 {
+	// 新序列号比最后记录的序列号大64以上，认为连接发生了重置
     if (seq > tun->seq_last + 64) {
         /* consider a connection reset. */
         tun->seq_vect = (uint64_t) -1;
         tun->seq_last = seq;
+	// 正常的新数据包，更新最新序列号，包含丢包的情况
     } else if (seq > tun->seq_last) {
         /* new sequence number -- recent message arrive */
         tun->seq_vect <<= seq - tun->seq_last;
         tun->seq_vect |= 1;
         tun->seq_last = seq;
+	// 延迟达到的数据包
     } else if (seq >= tun->seq_last - 63) {
         tun->seq_vect |= (1 << (tun->seq_last - seq));
     }
 }
 
+// 丢包率计算，最新64个数据包的丢包率
 int
 mlvpn_loss_ratio(mlvpn_tunnel_t *tun)
 {
@@ -295,27 +310,35 @@ mlvpn_loss_ratio(mlvpn_tunnel_t *tun)
     return loss * 100 / 64;
 }
 
+// 普通数据包接收处理
 static int
 mlvpn_rtun_recv_data(mlvpn_tunnel_t *tun, mlvpn_pkt_t *inpkt)
 {
     int ret;
     uint32_t drained;
+
+	// 未开启重拍序，直接写入到tun/tap
     if (reorder_buffer == NULL || !inpkt->reorder) {
         mlvpn_rtun_inject_tuntap(inpkt);
         return 1;
-    } else {
+    } 
+	// 启用了重拍序功能
+	else {
+		// 获取空闲数据包
         mlvpn_pkt_t *pkt = mlvpn_freebuffer_get(freebuf);
         if (!pkt) {
             log_warnx("reorder", "freebuffer full: reorder_buffer_size must be increased.");
             mlvpn_rtun_inject_tuntap(inpkt);
             return 1;
         }
+
+		// 将数据包插入到重排序缓冲区
         memcpy(pkt, inpkt, sizeof(mlvpn_pkt_t));
         ret = mlvpn_reorder_insert(reorder_buffer, pkt);
         if (ret == -1) {
             log_warnx("net", "reorder_buffer_insert failed: %d", ret);
             mlvpn_reorder_reset(reorder_buffer);
-            drained = mlvpn_rtun_reorder_drain(0);
+            drained = mlvpn_rtun_reorder_drain(0);	// 将重排序缓冲区中的包写入到tun/tap
         } else if (ret == -2) {
             /* We have received a packet out of order just
              * after the forced drain (packet loss)
@@ -331,11 +354,14 @@ mlvpn_rtun_recv_data(mlvpn_tunnel_t *tun, mlvpn_pkt_t *inpkt)
         }
         //log_debug("reorder", "drained %d packets", drained);
     }
+
+	// 返回实际处理的包数
     return drained;
 }
 
 
 /* read from the rtunnel => write directly to the tap send buffer */
+// 读socket,写tun/tap
 static void
 mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
 {
@@ -359,6 +385,7 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
         mlvpn_pkt_t decap_pkt;
 
         /* validate the received packet */
+		// 验证和解析接收到的数据包，计算rtt
         if (mlvpn_protocol_read(tun, &pkt, &decap_pkt) < 0) {
             return;
         }
@@ -366,16 +393,22 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
         tun->recvbytes += len;
         tun->recvpackets += 1;
 
+		// 安全检查：确保隧道地址信息已初始化
         if (! tun->addrinfo)
             fatalx("tun->addrinfo is NULL!");
 
+		// 检查数据包是否来自预期的对端地址,用于检测地址变更或NAT
         if ((tun->addrinfo->ai_addrlen != addrlen) ||
                 (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0)) {
-            if (! (tun->status >= MLVPN_AUTHOK)) {
+
+			// 当前隧道尚未通过认证
+			if (! (tun->status >= MLVPN_AUTHOK)) {
                 log_warnx("protocol", "%s rejected non authenticated connection",
                     tun->name);
                 return;
             }
+
+			// 处理认证隧道的地址变更（如NAT重新映射、IP切换等）
             char clienthost[NI_MAXHOST];
             char clientport[NI_MAXSERV];
             int ret;
@@ -388,12 +421,15 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
             } else {
                 log_info("protocol", "%s new connection -> %s:%s",
                    tun->name, clienthost, clientport);
+
+				// 更新隧道的对端地址信息，适应地址变更
                 memcpy(tun->addrinfo->ai_addr, &clientaddr, addrlen);
             }
         }
         log_debug("net", "< %s recv %d bytes (type=%d, seq=%"PRIu64", reorder=%d)",
             tun->name, (int)len, decap_pkt.type, decap_pkt.seq, decap_pkt.reorder);
 
+		// 数据包处理
         if (decap_pkt.type == MLVPN_PKT_DATA) {
             if (tun->status >= MLVPN_AUTHOK) {
                 mlvpn_rtun_tick(tun);
@@ -402,6 +438,7 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
                 log_debug("protocol", "%s ignoring non authenticated packet",
                     tun->name);
             }
+		// 心跳包处理
         } else if (decap_pkt.type == MLVPN_PKT_KEEPALIVE &&
                 tun->status >= MLVPN_AUTHOK) {
             log_debug("protocol", "%s keepalive received", tun->name);
@@ -412,10 +449,12 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
                 tun->last_keepalive_ack_sent = tun->last_keepalive_ack;
                 mlvpn_rtun_send_keepalive(tun->last_keepalive_ack, tun);
             }
+		// 断开连接请求
         } else if (decap_pkt.type == MLVPN_PKT_DISCONNECT &&
                 tun->status >= MLVPN_AUTHOK) {
             log_info("protocol", "%s disconnect received", tun->name);
             mlvpn_rtun_status_down(tun);
+		// 认证包
         } else if (decap_pkt.type == MLVPN_PKT_AUTH ||
                 decap_pkt.type == MLVPN_PKT_AUTH_OK) {
             mlvpn_rtun_send_auth(tun);
@@ -423,6 +462,7 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
     }
 }
 
+// 解析、验证、解密接收到的数据包，计算rtt
 static int
 mlvpn_protocol_read(
     mlvpn_tunnel_t *tun, mlvpn_pkt_t *pkt,
@@ -438,6 +478,7 @@ mlvpn_protocol_read(
     memset(decap_pkt, 0, sizeof(*decap_pkt));
 
     /* pkt->data contains mlvpn_proto_t struct */
+	// 数据包长度检查
     if (pkt->len > sizeof(pkt->data) || pkt->len > sizeof(proto) ||
             pkt->len < (PKTHDRSIZ(proto))) {
         log_warnx("protocol", "%s received invalid packet of %d bytes",
@@ -450,10 +491,12 @@ mlvpn_protocol_read(
         log_warnx("protocol", "%s invalid packet size: %d", tun->name, rlen);
         goto fail;
     }
+	// 大端字节序转主机字节序
     proto.seq = be64toh(proto.seq);
     proto.timestamp = be16toh(proto.timestamp);
     proto.timestamp_reply = be16toh(proto.timestamp_reply);
     proto.flow_id = be32toh(proto.flow_id);
+
     /* now auth the packet using libsodium before further checks */
 #ifdef ENABLE_CRYPTO
     if (mlvpn_options.cleartext_data && proto.flags == MLVPN_PKT_DATA) {
@@ -476,29 +519,42 @@ mlvpn_protocol_read(
 #endif
     decap_pkt->len = rlen;
     decap_pkt->type = proto.flags;
+
+	// 兼容不同版本的MLVPN，新版本支持数据包重拍序
     if (proto.version >= 1) {
         decap_pkt->reorder = proto.reorder;
         decap_pkt->seq = be64toh(proto.data_seq);
-        mlvpn_loss_update(tun, proto.seq);
+        mlvpn_loss_update(tun, proto.seq);	// 丢包统计
     } else {
         decap_pkt->reorder = 0;
         decap_pkt->seq = 0;
     }
+
+	// 有效时间戳，更新之
     if (proto.timestamp != (uint16_t)-1) {
         tun->saved_timestamp = proto.timestamp;
         tun->saved_timestamp_received_at = now64;
     }
+
+	// 对方回复的时间戳，计算RTT
     if (proto.timestamp_reply != (uint16_t)-1) {
         uint16_t now16 = mlvpn_timestamp16(now64);
         double R = mlvpn_timestamp16_diff(now16, proto.timestamp_reply);
+
+		// 忽略过大的值
         if (R < 5000) { /* ignore large values, e.g. server was Ctrl-Zed */
-            if (!tun->rtt_hit) { /* first measurement */
+
+			// 未测量到rtt
+			if (!tun->rtt_hit) { /* first measurement */
                 tun->srtt = R;
                 tun->rttvar = R / 2;
                 tun->rtt_hit = 1;
-            } else {
-                const double alpha = 1.0 / 8.0;
-                const double beta = 1.0 / 4.0;
+            } 
+			// 成功测量到rtt,更新之
+			else {
+				// 使用TCP标准算法更新SRTT和RTTVAR
+                const double alpha = 1.0 / 8.0;		// SRTT平滑因子
+                const double beta = 1.0 / 4.0;		// RTTVAR平滑因子
                 tun->rttvar = (1 - beta) * tun->rttvar + (beta * fabs(tun->srtt - R));
                 tun->srtt = (1 - alpha) * tun->srtt + (alpha * R);
             }
@@ -512,6 +568,7 @@ fail:
     return -1;
 }
 
+// 隧道发送数据包，将数据包封装成MLVPN协议格式并发送
 static int
 mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
 {
@@ -522,6 +579,7 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
     uint64_t now64 = mlvpn_timestamp64(ev_now(EV_DEFAULT_UC));
     memset(&proto, 0, sizeof(proto));
 
+	// 从发送缓冲区取一个包
     mlvpn_pkt_t *pkt = mlvpn_pktbuffer_read(pktbuf);
     pkt->reorder = 1;
     if (pkt->type == MLVPN_PKT_DATA && pkt->reorder) {
@@ -538,11 +596,14 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
     proto.reorder = pkt->reorder;
 
     /* we have a recent received timestamp */
+	// 确保时间戳回复的有效性，只有在最近1s接收到的时间戳才会进行回复，超过1s的时间戳已经失去了测量意义
     if (now64 - tun->saved_timestamp_received_at < 1000 ) {
         /* send "corrected" timestamp advanced by how long we held it */
         /* Cast to uint16_t there intentional */
+		// 对端发送的间戳 + 本地处理的延时时间
         proto.timestamp_reply = tun->saved_timestamp + (now64 - tun->saved_timestamp_received_at);
-        tun->saved_timestamp = -1;
+		// 状态清理
+		tun->saved_timestamp = -1;
         tun->saved_timestamp_received_at = 0;
     } else {
         proto.timestamp_reply = -1;
@@ -576,6 +637,8 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
 #else
     memcpy(&proto.data, &pkt->data, pkt->len);
 #endif
+
+	// 主机字节序转大端字节序
     proto.len = htobe16(proto.len);
     proto.seq = htobe64(proto.seq);
     proto.data_seq = htobe64(proto.data_seq);
@@ -603,6 +666,7 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
         }
     }
 
+	// 发送缓冲区已空，停止写事件监听
     if (ev_is_active(&tun->io_write) && mlvpn_cb_is_empty(pktbuf)) {
         ev_io_stop(EV_A_ &tun->io_write);
     }
@@ -610,14 +674,18 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
 }
 
 
+// 隧道写入
 static void
 mlvpn_rtun_write(EV_P_ ev_io *w, int revents)
 {
     mlvpn_tunnel_t *tun = w->data;
+
+	// 优先处理高优先级队列
     if (! mlvpn_cb_is_empty(tun->hpsbuf)) {
         mlvpn_rtun_send(tun, tun->hpsbuf);
     }
 
+	// 普通优先级队列
     if (! mlvpn_cb_is_empty(tun->sbuf)) {
         mlvpn_rtun_send(tun, tun->sbuf);
     }
@@ -692,10 +760,10 @@ mlvpn_rtun_new(const char *name,
         strlcpy(new->destport, destport, sizeof(new->destport));
 
     /* 数据包缓冲区初始化 - 双缓冲区设计 */
-    new->sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);               // 初始化标准发送缓冲区
+    new->sbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);               // 初始化普通发送缓冲区
     new->hpsbuf = mlvpn_pktbuffer_init(PKTBUFSIZE);             // 初始化高优先级发送缓冲区
 
-    mlvpn_rtun_tick(new);       // 更新隧道时间戳（用于超时检测）
+    mlvpn_rtun_tick(new);       // 隧道最新活动时间戳
 
     /* 超时和心跳配置 */
     new->timeout = timeout;
@@ -718,6 +786,7 @@ mlvpn_rtun_new(const char *name,
     return new;
 }
 
+// 隧道完全销毁和清理
 void
 mlvpn_rtun_drop(mlvpn_tunnel_t *t)
 {
@@ -749,6 +818,8 @@ mlvpn_rtun_drop(mlvpn_tunnel_t *t)
 /* Based on tunnel bandwidth, compute a "weight" value
  * to balance correctly the round robin rtun_choose.
  */
+
+// 基于带宽计算权重，以便在轮询选择隧道时负载均衡
 static void
 mlvpn_rtun_recalc_weight()
 {
@@ -757,22 +828,31 @@ mlvpn_rtun_recalc_weight()
     int warned = 0;
     /* If the bandwidth limit is not set on all interfaces, then
      * it's impossible to balance correctly! */
+     
+	/* 如果不是所有接口都设置了带宽限制，那么就无法进行正确的负载均衡！ */
+
+	// 累加所有隧道的带宽，计算总带宽
     LIST_FOREACH(t, &rtuns, entries)
     {
         if (t->bandwidth == 0)
             warned++;
         bandwidth_total += t->bandwidth;
     }
-    if (warned && bandwidth_total > 0) {
+
+	// 必须为所有接口都设置带宽限制
+	if (warned && bandwidth_total > 0) {
         log_warnx("config", "you must set the bandwidth on every tunnel");
     }
+
+	// 只有当所有隧道都配置了带宽时（warned == 0），才进行权重计算
     if (warned == 0)
     {
         LIST_FOREACH(t, &rtuns, entries)
         {
             /* useless, but we want to be sure not to divide by 0 ! */
             if (t->bandwidth > 0 && bandwidth_total > 0)
-            {
+            {	
+            	// 权重表示该隧道在总带宽中所占的百分比
                 t->weight = (((double)t->bandwidth /
                               (double)bandwidth_total) * 100.0);
                 log_debug("wrr", "%s weight = %f (%u %u)", t->name, t->weight,
@@ -1025,6 +1105,7 @@ mlvpn_rtun_status_up(mlvpn_tunnel_t *t)
     update_process_title();
 }
 
+// 隧道断开处理
 void
 mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
 {
@@ -1041,6 +1122,8 @@ mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
     }
 
     mlvpn_update_status();
+
+	// 隧道状态处于MLVPN_AUTHOK之后，才需要进行的清理操作
     if (old_status >= MLVPN_AUTHOK)
     {
         mlvpn_script_get_env(&env_len, &env);
@@ -1189,6 +1272,7 @@ mlvpn_rtun_choose()
     return tun;
 }
 
+// 发送保活心跳包，高优先级
 static void
 mlvpn_rtun_send_keepalive(ev_tstamp now, mlvpn_tunnel_t *t)
 {
@@ -1200,9 +1284,10 @@ mlvpn_rtun_send_keepalive(ev_tstamp now, mlvpn_tunnel_t *t)
         pkt = mlvpn_pktbuffer_write(t->hpsbuf);
         pkt->type = MLVPN_PKT_KEEPALIVE;
     }
-    t->next_keepalive = NEXT_KEEPALIVE(now, t);
+    t->next_keepalive = NEXT_KEEPALIVE(now, t);	// 心跳包的下一次发送时间
 }
 
+// 发送断开连接请求
 static void
 mlvpn_rtun_send_disconnect(mlvpn_tunnel_t *t)
 {
@@ -1217,16 +1302,21 @@ mlvpn_rtun_send_disconnect(mlvpn_tunnel_t *t)
     mlvpn_rtun_send(t, t->hpsbuf);
 }
 
+// 检查是否启用备份链路
 static void
 switch_to_fallback_if_necessary() {
     mlvpn_tunnel_t *t;
     LIST_FOREACH(t, &rtuns, entries) {
+
+		// 找到任意一个 (1)不是备份链路 (2)不是高延时链路 (3)不是高丢包链路，则说明还有可用的链路
         if (! t->fallback_only && t->status != MLVPN_HIGH_LATENCY && t->status != MLVPN_LOSSY) {
-            mlvpn_status.fallback_mode = 0;
-            mlvpn_rtun_wrr_reset(&rtuns, mlvpn_status.fallback_mode);
+            mlvpn_status.fallback_mode = 0;	// 不需回退
+            mlvpn_rtun_wrr_reset(&rtuns, mlvpn_status.fallback_mode);	// 重置加权轮询调度器
             return;
         }
     }
+
+	// 所有隧道都不可以，必须回退了，通过加权轮询调度器只启用备份链路
     if (mlvpn_options.fallback_available) {
         log_info(NULL, "all tunnels are down, lossy or too slow, switch fallback mode");
         mlvpn_status.fallback_mode = 1;
@@ -1236,16 +1326,20 @@ switch_to_fallback_if_necessary() {
     }
 }
 
+// 检查隧道丢包率，更新隧道状态
 static void
 mlvpn_rtun_check_lossy(mlvpn_tunnel_t *tun)
 {
     int loss = mlvpn_loss_ratio(tun);
     int status_changed = 0;
+
+	// 丢包率超出容忍阈值
     if (loss >= tun->loss_tolerence && tun->status == MLVPN_AUTHOK) {
         log_info("rtt", "%s packet loss reached threashold: %d%%/%d%%",
             tun->name, loss, tun->loss_tolerence);
         tun->status = MLVPN_LOSSY;
         status_changed = 1;
+	// 丢包率在容忍阈值范围内
     } else if (loss < tun->loss_tolerence && tun->status == MLVPN_LOSSY) {
         log_info("rtt", "%s packet loss acceptable again: %d%%/%d%%",
             tun->name, loss, tun->loss_tolerence);
@@ -1253,23 +1347,30 @@ mlvpn_rtun_check_lossy(mlvpn_tunnel_t *tun)
         status_changed = 1;
     }
     /* are all links in high latency or lossy mode ? switch to fallback ? */
+	// 链路状态发生了变化，检查是否需要切换到fallback模式，即是否启用备份链路
     if (status_changed) {
         switch_to_fallback_if_necessary();
     }
 }
 
+// 检查隧道延迟，更新隧道状态
 static void
 mlvpn_rtun_check_slow(mlvpn_tunnel_t *tun)
 {
+	// 1000表示不检查延时
     if(tun->latency_tolerence == 1000) {
         return;
     }
+	
     int status_changed = 0;
+
+	// 延迟超出容忍阈值
     if (tun->srtt >= tun->latency_tolerence && tun->status == MLVPN_AUTHOK) {
         log_info("rtt", "%s latency reached threashold: %fms/%dms",
                  tun->name, tun->srtt, tun->latency_tolerence);
         tun->status = MLVPN_HIGH_LATENCY;
         status_changed = 1;
+	// 延迟在容忍阈值范围内
     } else if (tun->srtt < tun->latency_tolerence && tun->status == MLVPN_HIGH_LATENCY) {
         log_info("rtt", "%s latency acceptable again: %fms/%dms",
                  tun->name, tun->srtt, tun->latency_tolerence);
@@ -1277,31 +1378,44 @@ mlvpn_rtun_check_slow(mlvpn_tunnel_t *tun)
         status_changed = 1;
     }
     /* are all links in high latency or lossy mode ? switch to fallback ? */
+	// 检查是否仅启用备份链路
     if (status_changed) {
         switch_to_fallback_if_necessary();
     }
 }
 
+// 定时器检查
 static void
 mlvpn_rtun_check_timeout(EV_P_ ev_timer *w, int revents)
 {
     mlvpn_tunnel_t *t = w->data;
     ev_tstamp now = ev_now(EV_DEFAULT_UC);
     if (t->status >= MLVPN_AUTHOK && t->timeout > 0) {
+
+		// 心跳包超时，认为连接断开，将隧道状态设置为离线
         if ((t->last_keepalive_ack != 0) && (t->last_keepalive_ack + t->timeout) < now) {
             log_info("protocol", "%s timeout", t->name);
             mlvpn_rtun_status_down(t);
-        } else {
+        } 
+		// 发送心跳包
+		else {
             if (now > t->next_keepalive)
                 mlvpn_rtun_send_keepalive(now, t);
         }
-    } else if (t->status < MLVPN_AUTHOK) {
+    } 
+	// 连接超时，重新连接
+	else if (t->status < MLVPN_AUTHOK) {
         mlvpn_rtun_tick_connect(t);
     }
+
+	// 检查写事件监听器状态和高优先级的发送缓冲区，触发写事件
     if (!ev_is_active(&t->io_write) && ! mlvpn_cb_is_empty(t->hpsbuf)) {
         ev_io_start(EV_A_ &t->io_write);
     }
+
+	// 检查丢包率
     mlvpn_rtun_check_lossy(t);
+	// 检查延迟
     mlvpn_rtun_check_slow(t);
 }
 

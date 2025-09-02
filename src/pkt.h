@@ -39,6 +39,7 @@ typedef struct {
 
 
 /* packet sent on the wire. 20 bytes headers for mlvpn */
+// 20字节的包头 + 1500 MTU
 typedef struct {
     uint16_t len;
     uint16_t version: 4; /* protocol version */
@@ -53,6 +54,7 @@ typedef struct {
     char data[DEFAULT_MTU];
 } __attribute__((packed)) mlvpn_proto_t;
 
+// MLVPN包头长度，固定为 20byte
 #define PKTHDRSIZ(pkt) (sizeof(pkt)-sizeof(pkt.data))
 #define ETH_OVERHEAD 24
 #define IPV4_OVERHEAD 20
